@@ -1,0 +1,4 @@
+# macOS specific
+.DS_Store
+build/** 
+.cache/**
