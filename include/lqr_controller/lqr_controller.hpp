@@ -100,6 +100,13 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    */
     void setPlan(const nav_msgs::msg::Path & path) override;
 
+  nav_msgs::msg::Path transformGlobalPlan(const geometry_msgs::msg::PoseStamped & pose);
+
+  bool transformPose(
+    const std::string frame,
+    const geometry_msgs::msg::PoseStamped & in_pose,
+    geometry_msgs::msg::PoseStamped & out_pose)const;
+
   /**
    * @brief Cost at a point
    * @param x Pose of pose x

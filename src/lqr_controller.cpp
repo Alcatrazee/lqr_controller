@@ -55,6 +55,8 @@ void LqrController::configure(
   collision_checker_ = std::make_unique<nav2_costmap_2d::
   FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
+  transform_tolerance_ = tf2::durationFromSec(0.5);
+
 }
 
 void LqrController::cleanup()
@@ -123,6 +125,94 @@ double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
   return yaw;
 }
 
+// bool LqrController::transformPose(
+//   const std::string frame,
+//   const geometry_msgs::msg::PoseStamped & in_pose,
+//   geometry_msgs::msg::PoseStamped & out_pose) const
+// {
+//   if (in_pose.header.frame_id == frame) {
+//     out_pose = in_pose;
+//     return true;
+//   }
+
+//   try {
+//     tf_buffer_->transform(in_pose, out_pose, frame, transform_tolerance_);
+//     out_pose.header.frame_id = frame;
+//     return true;
+//   } catch (tf2::TransformException & ex) {
+//     RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
+//   }
+//   return false;
+// }
+
+// nav_msgs::msg::Path LqrController::transformGlobalPlan(
+//   const geometry_msgs::msg::PoseStamped & pose)
+// {
+//   if (global_plan_.poses.empty()) {
+//     throw nav2_core::PlannerException("Received plan with zero length");
+//   }
+
+//   // let's get the pose of the robot in the frame of the plan
+//   geometry_msgs::msg::PoseStamped robot_pose;
+//   if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
+//     throw nav2_core::PlannerException("Unable to transform robot pose into global plan's frame");
+//   }
+
+//   // We'll discard points on the plan that are outside the local costmap
+//   double max_costmap_extent = getCostmapMaxExtent();
+
+//   auto closest_pose_upper_bound =
+//     nav2_util::geometry_utils::first_after_integrated_distance(
+//     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
+
+//   // First find the closest pose on the path to the robot
+//   // bounded by when the path turns around (if it does) so we don't get a pose from a later
+//   // portion of the path
+//   auto transformation_begin =
+//     nav2_util::geometry_utils::min_by(
+//     global_plan_.poses.begin(), closest_pose_upper_bound,
+//     [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
+//       return euclidean_distance(robot_pose, ps);
+//     });
+
+//   // Find points up to max_transform_dist so we only transform them.
+//   auto transformation_end = std::find_if(
+//     transformation_begin, global_plan_.poses.end(),
+//     [&](const auto & pose) {
+//       return euclidean_distance(pose, robot_pose) > max_costmap_extent;
+//     });
+
+//   // Lambda to transform a PoseStamped from global frame to local
+//   auto transformGlobalPoseToLocal = [&](const auto & global_plan_pose) {
+//       geometry_msgs::msg::PoseStamped stamped_pose, transformed_pose;
+//       stamped_pose.header.frame_id = global_plan_.header.frame_id;
+//       stamped_pose.header.stamp = robot_pose.header.stamp;
+//       stamped_pose.pose = global_plan_pose.pose;
+//       transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose);
+//       transformed_pose.pose.position.z = 0.0;
+//       return transformed_pose;
+//     };
+
+//   // Transform the near part of the global plan into the robot's frame of reference.
+//   nav_msgs::msg::Path transformed_plan;
+//   std::transform(
+//     transformation_begin, transformation_end,
+//     std::back_inserter(transformed_plan.poses),
+//     transformGlobalPoseToLocal);
+//   transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
+//   transformed_plan.header.stamp = robot_pose.header.stamp;
+
+//   // Remove the portion of the global plan that we've already passed so we don't
+//   // process it on the next iteration (this is called path pruning)
+//   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
+//   global_path_pub_->publish(transformed_plan);
+
+//   if (transformed_plan.poses.empty()) {
+//     throw nav2_core::PlannerException("Resulting plan has 0 poses in it.");
+//   }
+
+//   return transformed_plan;
+// }
 nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose){
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
@@ -185,6 +275,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(pose);
 
+  
+
 
   // int nbSteps = local_plan.poses.size();
   // Eigen::VectorXd X_r = VectorXd::Zero(nbSteps * 3);
@@ -218,6 +310,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   robot_state_ = vehicleState{pose.pose.position.x,pose.pose.position.y,get_yaw(pose), speed.linear.x,kesi_};
 
+  RCLCPP_INFO(logger_,"pos %f %f",pose.pose.position.x,pose.pose.position.y);
+
   // lqr 
   // get closest point
   int target_index = Find_target_index(robot_state_,global_plan_);
@@ -236,13 +330,13 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // std::cout << "K: " << K << std::endl;
   double kesi = atan2(L_ * K, 1);
   // std::cout << "kesi: " << kesi << std::endl;
-  double Q[5] = {5.0,1.0,0.1,1,1};
+  double Q[5] = {10.0,1.0,1,1,1};
   double R[2] = {1,1};
 
   U U_r;
 
   double distance_to_goal = std::hypot(pose.pose.position.x - global_plan_.poses[global_plan_.poses.size()-1].pose.position.x,pose.pose.position.y - global_plan_.poses[global_plan_.poses.size()-1].pose.position.y);
-  double Kp = 1;
+  double Kp = 0.5;
   U_r.v = Kp * distance_to_goal;
 
   if(goal_checker->isGoalReached(pose.pose, global_plan_.poses.back().pose , speed)){
@@ -261,12 +355,12 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // std::cout << "u completed" << std::endl;
   if(U_r.v==0)control.v = 0;
 
-  std::cout << "u kesi: " << U_r.kesi << std::endl;
+  // std::cout << "u kesi: " << U_r.kesi << std::endl;
   
   cmd_vel.twist.linear.x = control.v;
   cmd_vel.twist.angular.z = control.v*tan(control.kesi)/L_;
 
-  cmd_vel.twist.linear.x = std::clamp(cmd_vel.twist.linear.x,-0.3,0.3);
+  cmd_vel.twist.linear.x = std::clamp(cmd_vel.twist.linear.x,-0.5,0.5);
   // cmd_vel.twist.angular.z = std::clamp(cmd_vel.twist.angular.z,-1.0,1.0);
 
   // auto [X_vec, U] = problem_->lqrSolve(x_init);

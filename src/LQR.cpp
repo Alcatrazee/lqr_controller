@@ -35,6 +35,9 @@ void LQR::param_struct() {
 			0.0, 0.0, 1.0, T,   0.0,
 			0.0, 0.0, 0.0, 0.0, 0.0,
 			0.0, 0.0, 0.0, 0.0, 1.0;
+	
+	Eigen::JacobiSVD<Matrix5x5> svd(A_d);
+	// cout << "A_d rank:" << svd.rank() << endl;
 	// cout << "A_d矩阵为:\n" << A_d << endl;
 	B_d << 	0,  	0,
 			0,		0,
@@ -47,7 +50,7 @@ void LQR::param_struct() {
 }
  
 Matrix2x5 LQR::cal_Riccati() {
-	int N = 150;//迭代终止次数
+	int N = 1000;//迭代终止次数
 	double err = 100;//误差值
 	double err_tolerance = 0.01;//误差收敛阈值
 	Matrix5x5 Qf = Q;
@@ -85,19 +88,37 @@ U LQR::cal_vel() {
 	Matrix2x5 K = cal_Riccati();
 
 	static double last_e = 0,last_e_th = 0;
-	double e = hypot(x_car - x_d, y_car - y_d);
 
-	double dxl = x_d - x_car;
-	double dyl = y_d - y_car;
-	double angle_diff = yaw_d - atan2(dyl,dxl);
+	Matrix4x4 T_map_robot,T_map_ref_p;
 
-	if(angle_diff > M_PI)angle_diff -= M_PI;
-	else if(angle_diff < -M_PI)angle_diff+=M_PI;
+	T_map_robot <<  cos(yaw_car), -sin(yaw_car), 0 , x_car, 
+					sin(yaw_car),  cos(yaw_car), 0 , y_car, 
+					0, 					0	, 		  1,  0,
+					0, 					0	, 		  0,  1	;
 
-	if(angle_diff<0)e = -e;
+	cout << "T_map_robot矩阵为:\n" << T_map_robot << endl;
+
+	T_map_ref_p << cos(yaw_d),  -sin(yaw_d), 0 , x_d, 
+					sin(yaw_d),  cos(yaw_d), 0 , y_d, 
+					0, 					0	, 		  1,  0,
+					0, 					0	, 		  0,  1	;
+
+	cout << "T_map_ref_p矩阵为:\n" << T_map_ref_p << endl;
+
+	Matrix4x4 T_p_robot = T_map_ref_p.inverse() * T_map_robot;
+
+	cout << "T_p_robot矩阵为:\n" << T_p_robot << endl;
+
+	double e = T_p_robot(1,3);//hypot(x_car - x_d, y_car - y_d);
+	// double e = hypot(x_car - x_d, y_car - y_d);
+	// double dxl = x_d - x_car;
+	// double dyl = y_d - y_car;
+	// double angle_diff = YAW_P2P(yaw_d - atan2(dyl,dxl));
+
+	// if(angle_diff<0)e = e*-1;
 	
 	double e_dot = (e - last_e)/T;
-	double e_th = yaw_car - yaw_d;
+	double e_th = YAW_P2P(yaw_car - yaw_d);
 	double e_th_dot = (e_th - last_e_th)/T;
 	last_e = e;
 	last_e_th = e_th;
@@ -114,7 +135,7 @@ U LQR::cal_vel() {
 	// cout << "compute U" << endl;
 	Matrix2x1 U = -K * X_e;
 	// cout << "反馈增益K为：\n" << K << endl;
-	cout << "控制输入U为：\n" << U << endl;
+	// cout << "控制输入U为：\n" << U << endl;
 	
 	output.v = U[1]* T + v_car;
 	output.a = U[1];

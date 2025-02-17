@@ -18,6 +18,7 @@ typedef Eigen::Matrix<double, 2, 5> Matrix2x5;
 //状态方程变量: X = [x_e  y_e  yaw_e]^T
 //状态方程控制输入: U = [v_e  kesi_e]^T
  
+#define YAW_P2P(angle) std::fmod(std::fmod((angle)+M_PI, 2*M_PI)-2*M_PI, 2*M_PI)+M_PI
 class LQR
 {
 private:
