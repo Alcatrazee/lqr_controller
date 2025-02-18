@@ -1,9 +1,12 @@
 #include <algorithm>
+#include <atomic>
 #include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
 #include <iterator>
 #include <nav_msgs/msg/detail/path__struct.hpp>
+#include <rclcpp/clock.hpp>
+#include <rclcpp/logging.hpp>
 #include <rclcpp/time.hpp>
 #include <string>
 #include <iostream>
@@ -129,23 +132,39 @@ double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
 nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose){
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
-  double costmap_radius = costmap_->getSizeInMetersX()/2;
-  for (auto & pose : global_plan_.poses) {
+  double costmap_radius = std::max(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2;
+  int index = Find_target_index(robot_pose,global_plan_);
+
+  // fill local plan on the front
+  for (int i=index; i>0;--i) {
+    auto pose = global_plan_.poses[i];
+    if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
+      break;
+    }else{
+      local_path.poses.insert(local_path.poses.begin(),(pose));
+    }
+  }
+  // fill local 
+  for(size_t i=index;i<global_plan_.poses.size();++i){
+    auto pose = global_plan_.poses[i];
     if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
       break;
     }else{
       local_path.poses.push_back(pose);
     }
   }
+
+  local_path.header.frame_id = costmap_ros_->getGlobalFrameID();
+  local_path.header.stamp = rclcpp::Time();
   return local_path;
 }
 
-int Find_target_index(vehicleState state, nav_msgs::msg::Path &local_path){
-  double min = abs(sqrt(pow(state.x - local_path.poses[0].pose.position.x, 2) + pow(state.y - local_path.poses[0].pose.position.y, 2)));
+int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & state, nav_msgs::msg::Path &local_path){
+  double min = abs(sqrt(pow(state.pose.position.x - local_path.poses[0].pose.position.x, 2) + pow(state.pose.position.y - local_path.poses[0].pose.position.y, 2)));
   int index = 0;
   for (size_t i = 0; i < local_path.poses.size(); i++)
   {
-    double d = abs(sqrt(pow(state.x - local_path.poses[i].pose.position.x, 2) + pow(state.y - local_path.poses[i].pose.position.y, 2)));
+    double d = abs(sqrt(pow(state.pose.position.x - local_path.poses[i].pose.position.x, 2) + pow(state.pose.position.y - local_path.poses[i].pose.position.y, 2)));
     if (d < min)
     {
       min = d;
@@ -159,7 +178,7 @@ int Find_target_index(vehicleState state, nav_msgs::msg::Path &local_path){
     double current_x = local_path.poses[index].pose.position.x; double current_y = local_path.poses[index].pose.position.y;
     double next_x = local_path.poses[index + 1].pose.position.x; double next_y = local_path.poses[index + 1].pose.position.y;
     double L_ = abs(sqrt(pow(next_x - current_x, 2) + pow(next_y - current_y, 2)));
-    double L_1 = abs(sqrt(pow(state.x - next_x, 2) + pow(state.y - next_y, 2)));
+    double L_1 = abs(sqrt(pow(state.pose.position.x - next_x, 2) + pow(state.pose.position.y - next_y, 2)));
     //ROS_INFO("L is %f,Lf is %f",L,Lf);
     if (L_1 < L_)
     {
@@ -171,9 +190,17 @@ int Find_target_index(vehicleState state, nav_msgs::msg::Path &local_path){
   return index;
 }
 
+void LqrController::remove_duplicated_points(vector<waypoint>& points){
+  for(size_t i=0;i<points.size()-1;i++){
+    if(points[i].x == points[i+1].x && points[i].y == points[i+1].y && points[i+1].yaw == points[i+1].yaw){
+      points.erase(points.begin()+i);
+    }
+  }
+}
+
 vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
   vector<double> sp(wp.size());
-  double kp = 0.5;
+  double kp = 0.5;// TODO: parameterize it
   for (size_t i = 0; i < wp.size()-1; i++)
   {
     // get next point on from or back
@@ -188,27 +215,53 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
                 0, 0, 1, 0,
                 0, 0, 0, 1;
     Matrix4x4 T_pn_pnp1 = T_map_pn.inverse() * T_map_pnp1;
-    float next_dir = atan2(T_pn_pnp1(1,0), T_pn_pnp1(0,0));
+    float next_dir = atan2(T_pn_pnp1(1,3), T_pn_pnp1(0,3));
     if(next_dir < -M_PI_2 || next_dir > M_PI_2){
       backward_motion = true;
     }
     // curvature constraint
-    curvature_list.push_back(cal_K(wp, i));
+    double K = cal_K(wp, i);
+    if(isnan(K)){
+      cerr << "K is nan, index: " << i << endl;
+    }
+    curvature_list.push_back(K);
     double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(curvature_list[i]));
 
     // goal constrain
     double distance_to_goal = std::hypot(state.x - wp.back().x, state.y - wp.back().y);
     double max_v_distance = kp*distance_to_goal;
-    max_v_distance = std::max((double)v_min, max_v_distance)*((backward_motion==true)?-1:1);
+    max_v_distance = std::max((double)v_min, max_v_distance);
     sp.back() = max_v_distance; // set last point speed profile as dynamic
 
     // get speed
-    if(!backward_motion)
-      sp[i] = (std::min((double)fv_max, std::min(max_v_curvature,max_v_distance)));
-    else
-      sp[i] = (-std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)));
+    if(!backward_motion){
+      sp[i] = std::min((double)fv_max, std::min(max_v_curvature,max_v_distance));   // forward motion profile
+    }else{
+      sp[i] = -std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)); // backward motion profile
+    }
+    
   }
   return sp;
+}
+
+bool LqrController::transformPose(
+  const std::string frame,
+  const geometry_msgs::msg::PoseStamped & in_pose,
+  geometry_msgs::msg::PoseStamped & out_pose) const
+{
+  if (in_pose.header.frame_id == frame) {
+    out_pose = in_pose;
+    return true;
+  }
+
+  try {
+    tf_buffer_->transform(in_pose, out_pose, frame, transform_tolerance_);
+    out_pose.header.frame_id = frame;
+    return true;
+  } catch (tf2::TransformException & ex) {
+    RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
+  }
+  return false;
 }
 
 // TODO: must finish this function, this function is to receive global plan 
@@ -216,93 +269,78 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
 geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & speed,
-  nav2_core::GoalChecker * goal_checker)
+  nav2_core::GoalChecker * /*goal_checker*/)
 {
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd_vel;
+  static double last_control_time = rclcpp::Clock().now().seconds();
+  // get robot coordinate in map frame, due to the argument pose is in odom frame
+  geometry_msgs::msg::PoseStamped global_pose;
+  transformPose(global_plan_.header.frame_id,pose,global_pose);
 
-  // Eigen::VectorXd x_r = VectorXd::Zero(3);
-
-  nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(pose);
-
-  
-
-
-  // int nbSteps = local_plan.poses.size();
-  // Eigen::VectorXd X_r = VectorXd::Zero(nbSteps * 3);
-  // for(unsigned int i = 0; i < local_plan.poses.size(); i++) {
-  //   x_r << local_plan.poses[i].pose.position.x, local_plan.poses[i].pose.position.y, get_yaw(local_plan.poses[i]);
-  //   X_r.segment(i * 3, 3) = x_r;
-  // }
-  
-  // problem_ = std::make_shared<Problem>(nbSteps, X_r);
-  lqr_controller_ = std::make_shared<LQR>();
-
-  // Eigen::VectorXd x_init = Eigen::VectorXd::Zero(3);
-  // x_init << pose.pose.position.x, pose.pose.position.y, get_yaw(pose);
-
-  // double K;
-  // std::vector<std::vector<double>> path;
-  std::vector<waypoint> wps;
-  for(size_t i=0;i<global_plan_.poses.size();i++){
-    // std::vector<double> temp;
-    // temp.push_back(local_plan.poses[i].pose.position.x);
-    // temp.push_back(local_plan.poses[i].pose.position.y);
-    // temp.push_back(get_yaw(local_plan.poses[i]));
-    // path.push_back(temp);
-    waypoint wp;
-    wp.ID = i;
-    wp.x = global_plan_.poses[i].pose.position.x;
-    wp.y = global_plan_.poses[i].pose.position.y;
-    wp.yaw = get_yaw(global_plan_.poses[i]);
-    wps.push_back(wp);
+  // crop path inside costmap and publish it
+  nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose);
+  // if robot is not properly localized, use global plan instead
+  if(local_plan.poses.size() == 0){
+    RCLCPP_ERROR(logger_,"local plan empty, trying to find waypoint via global plan.");
+    local_plan = global_plan_;
   }
+  lqr_path_pub_->publish(local_plan);
 
-  robot_state_ = vehicleState{pose.pose.position.x,pose.pose.position.y,get_yaw(pose), speed.linear.x,kesi_};
+  // declare LQR controller
+  lqr_controller_ = std::make_shared<LQR>();
+  
+  // prepare lqr controller 
+  std::vector<waypoint> wps;
+  robot_state_ = vehicleState{global_pose.pose.position.x,global_pose.pose.position.y,get_yaw(global_pose), speed.linear.x,kesi_};
 
-  // RCLCPP_INFO(logger_,"pos %f %f",pose.pose.position.x,pose.pose.position.y);
-
-  // lqr 
-  // get closest point
-  int target_index = Find_target_index(robot_state_,global_plan_);
-  // std::cout << "get point " << std::endl;
-  waypoint Point = wps[target_index];
-
+  // get target point to track and publish 
+  int target_index = Find_target_index(global_pose,local_plan);
   geometry_msgs::msg::PoseStamped target_pose;
   target_pose.header.stamp = rclcpp::Time();
   target_pose.header.frame_id = "map";
-  target_pose.pose = global_plan_.poses[target_index].pose;
+  target_pose.pose = local_plan.poses[target_index].pose;
   target_pub_->publish(target_pose);
 
-  // std::cout << "path len: " << global_plan_.poses.size()  << " target index: " << target_index << " Point: " << "[" <<Point.x << "," << Point.y << "," << Point.yaw << "]" << std::endl;
-  vector<double> k_list;
-  vector<double> sp = get_speed_profile(robot_state_,0.5,0.3,0.1,0.30,wps,k_list);
-  // double K = cal_K(wps,target_index);
-  // std::cout << "K: " << K << std::endl;
-  double K = k_list[target_index];
-  double kesi = atan2(L_ * K, 1);
-  // std::cout << "K " << K << std::endl;
-  double Q[5] = {8.0,1.0,1,1,1};
-  double R[2] = {5,5};
-
-  U U_r;
-  U_r.v = sp[target_index];
-
-  // double distance_to_goal = std::hypot(pose.pose.position.x - global_plan_.poses[global_plan_.poses.size()-1].pose.position.x,pose.pose.position.y - global_plan_.poses[global_plan_.poses.size()-1].pose.position.y);
-  // double Kp = 0.5;
-  // U_r.v = Kp * distance_to_goal;
-
-  if(goal_checker->isGoalReached(pose.pose, global_plan_.poses.back().pose , speed)){
-    U_r.v = 0;
+  // get waypoints list
+  for(size_t i=0;i<local_plan.poses.size();i++){
+    waypoint wp;
+    wp.ID = i;
+    wp.x = local_plan.poses[i].pose.position.x;
+    wp.y = local_plan.poses[i].pose.position.y;
+    wp.yaw = get_yaw(local_plan.poses[i]);
+    wps.push_back(wp);
   }
-  U_r.v = std::clamp(U_r.v,-0.50,0.5);
-  U_r.kesi = kesi;
+  waypoint Point = wps[target_index];
+  // remove duplicated points to ensure cusp can be identified correctly
+  remove_duplicated_points(wps);
 
-  dt_ = 0.05;
+  // compute curvature and apply constraints to speed
+  vector<double> k_list;
+  // TODO: speed constraints made to be parameters
+  vector<double> sp = get_speed_profile(robot_state_,0.5,0.3,0.1,0.20,wps,k_list);
+  // get curvature of tracking point
+  double K = k_list[target_index];
+  double kesi = atan2(L_ * K, 1);   // reference steer angle
+
+  // TODO: these matrix should be made as parameters
+  double Q[5] = {8.0,1.0,1,1,1};
+  double R[2] = {1,1};
+
+  // reference input
+  U U_r;
+  U_r.v = sp[target_index];   // apply reference speed
+  U_r.v = std::clamp(U_r.v,-0.50,0.5);
+  U_r.kesi = kesi*(sp[target_index]>0?1:-1);
+
+  // TODO: make L parameter
+  dt_ = rclcpp::Clock().now().seconds() - last_control_time;
   L_ = 0.1;
+
+  last_control_time = rclcpp::Clock().now().seconds();
 
   lqr_controller_->initial(L_, dt_, robot_state_, Point, U_r, Q, R);
 
@@ -319,28 +357,10 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   cmd_vel.twist.linear.x = std::clamp(cmd_vel.twist.linear.x,-0.5,0.5);
   cmd_vel.twist.angular.z = std::clamp(cmd_vel.twist.angular.z,-2.0,2.0);
 
-  // auto [X_vec, U] = problem_->lqrSolve(x_init);
 
-  // visualize lqr path
-  // nav_msgs::msg::Path lqr_path;
-  // for(size_t i=0;i<X_vec.size();i++){
-  //   geometry_msgs::msg::PoseStamped pose_stamped;
-  //   pose_stamped.pose.position.x = X_vec[i][0];
-  //   pose_stamped.pose.position.y = X_vec[i][1];
-  //   pose_stamped.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0, 0, 1), X_vec[i][2]));
-  //   pose_stamped.header.frame_id = "map";
-  //   lqr_path.poses.push_back(pose_stamped);
-    
-  //   // printf("%f %f %f \n",X_vec[i][0],X_vec[i][1],X_vec[i][2]);
-  // }
-  // lqr_path.header.stamp = clock_->now();
-  // lqr_path.header.frame_id = "map";
-  // lqr_path_pub_->publish(lqr_path);
+  // cmd_vel.twist.angular.z = 0;
+  // cmd_vel.twist.linear.x = 0;
 
-
-  // cmd_vel.twist.linear.x = U.row(0)(0);
-  // cmd_vel.twist.angular.z = U.row(0)(1);
-  // end of lqr controller code
   return cmd_vel;
 }
 

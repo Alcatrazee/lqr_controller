@@ -1,0 +1,4 @@
+1. add cusp identification
+2. add obstacle detection
+3. add forward path computation
+4. remove usless code

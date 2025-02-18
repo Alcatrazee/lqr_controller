@@ -1,3 +1,6 @@
+#include <cmath>
+#include <iomanip>
+#include <ios>
 #include <iostream>
 #include "lqr_controller/LQR.hpp"
 #include <unsupported/Eigen/KroneckerProduct>
@@ -57,7 +60,6 @@ Matrix2x5 LQR::cal_Riccati() {
 	double err_tolerance = 0.01;//误差收敛阈值
 	Matrix5x5 Qf = Q;
 	Matrix5x5 P = Qf;//迭代初始值
-	//cout << "P初始矩阵为\n" << P << endl;
 	Matrix5x5 Pn;//计算的最新P矩阵
 	
 	for (int iter_num = 0; iter_num < N; iter_num++) {
@@ -70,7 +72,7 @@ Matrix2x5 LQR::cal_Riccati() {
 		if(err < err_tolerance)//
 		{
 			P = Pn;
-			// cout << "迭代次数" << iter_num << endl;
+			cout << "迭代次数" << iter_num << endl;
 			break;
 		}
 		P = Pn;
@@ -83,15 +85,13 @@ Matrix2x5 LQR::cal_Riccati() {
  
 U LQR::cal_vel() {
 	U output;
-	// cout << "param struct" << endl;
-	param_struct();
-	// cout << "calculate riccati" << endl;
-	Matrix2x5 K = cal_Riccati();
+	param_struct();		// formulate A B Q R matrices
+	Matrix2x5 K = cal_Riccati();	// solve DARE
 
-	static double last_e = 0,last_e_th = 0;
+	static double last_e = 0,last_e_th = 0;	// for e dot and theta dot
 
+	// compute latteral error
 	Matrix4x4 T_map_robot,T_map_ref_p;
-
 	T_map_robot <<  cos(yaw_car), -sin(yaw_car), 0 , x_car, 
 					sin(yaw_car),  cos(yaw_car), 0 , y_car, 
 					0, 					0	, 		  1,  0,
@@ -105,19 +105,12 @@ U LQR::cal_vel() {
 					0, 					0	, 		  0,  1	;
 
 	// cout << "T_map_ref_p矩阵为:\n" << T_map_ref_p << endl;
-
+	// compute robot frame wrt target frame
 	Matrix4x4 T_p_robot = T_map_ref_p.inverse() * T_map_robot;
 
 	// cout << "T_p_robot矩阵为:\n" << T_p_robot << endl;
 
-	double e = T_p_robot(1,3);//hypot(x_car - x_d, y_car - y_d);
-	// double e = hypot(x_car - x_d, y_car - y_d);
-	// double dxl = x_d - x_car;
-	// double dyl = y_d - y_car;
-	// double angle_diff = YAW_P2P(yaw_d - atan2(dyl,dxl));
-
-	// if(angle_diff<0)e = e*-1;
-	
+	double e = T_p_robot(1,3);	// extract y value
 	double e_dot = (e - last_e)/T;
 	double e_th = YAW_P2P(yaw_car - yaw_d);
 	double e_th_dot = (e_th - last_e_th)/T;
@@ -128,38 +121,34 @@ U LQR::cal_vel() {
 		   e_dot,
 		   e_th,
 		   e_th_dot,
-		   v_car-v_d;
+		   v_car-v_d;	// velocity error
 	
-	cout << "X_e矩阵为:\n" << X_e << endl;
+	// cout << "X_e矩阵为:\n" << X_e << endl;
+	cout << "X_e" << endl;
+	for(auto i :X_e){
+		cout << std::fixed << std::setprecision(5) << i << "\t";
+	}
+	cout << endl;
 
-
-	// cout << "compute U" << endl;
 	Matrix2x1 U = -K * X_e;
-	// cout << "反馈增益K为：\n" << K << endl;
-	// cout << "控制输入U为：\n" << U << endl;
-	
-	output.v = U[1]* T + v_d;
-	output.a = U[1];
-	output.kesi = U[0] + kesi_d;
+
+	// nan prevention
+	if(!isnan(U[1])){
+		output.v = U[1]* T + v_d;
+		output.a = U[1];
+	}else{
+		output.v = v_car;
+		output.a = 0.0;
+		cerr << "nan U1" << endl;
+	}
+	if(!isnan(U[0])){
+		output.kesi = U[0] + kesi_d;
+	}else{
+		output.kesi = kesi_d;
+		cerr << "nan U0" << endl;
+	}
+	// cout << U[0] << "," << U[1] << "," << kesi_d << endl;
+
 	return output;
 }
  
-void LQR::test() //控制器效果测试
-{
-	/*param_struct();
-	while (temp < 1000) {
-		Matrix2x3 K = cal_Riccati();
-		Matrix2x1 U = K * X_e;
-		//cout <<"state variable is:\n" <<X_e << endl;
-		//cout <<"control input is:\n"<< U << endl;
-		Matrix3x1 X_e_ = A_d * X_e + B_d * U;
-		X_e = X_e_;
-		temp++;
-	}*/
-	// Matrix3x3 C,D,F;
-	// C << 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0;
-	// F << 1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 7.0;
-	// D = (C - F);
-	// double BBBB = D.lpNorm<Eigen::Infinity>();
-	// cout << BBBB << endl;
-}
