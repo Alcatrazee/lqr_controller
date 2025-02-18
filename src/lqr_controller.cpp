@@ -23,6 +23,7 @@
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 
 #include "lqr_controller/Tool.h"
+#include <algorithm>
 
 using nav2_util::declare_parameter_if_not_declared;
 using nav2_util::geometry_utils::euclidean_distance;
@@ -125,94 +126,6 @@ double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
   return yaw;
 }
 
-// bool LqrController::transformPose(
-//   const std::string frame,
-//   const geometry_msgs::msg::PoseStamped & in_pose,
-//   geometry_msgs::msg::PoseStamped & out_pose) const
-// {
-//   if (in_pose.header.frame_id == frame) {
-//     out_pose = in_pose;
-//     return true;
-//   }
-
-//   try {
-//     tf_buffer_->transform(in_pose, out_pose, frame, transform_tolerance_);
-//     out_pose.header.frame_id = frame;
-//     return true;
-//   } catch (tf2::TransformException & ex) {
-//     RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
-//   }
-//   return false;
-// }
-
-// nav_msgs::msg::Path LqrController::transformGlobalPlan(
-//   const geometry_msgs::msg::PoseStamped & pose)
-// {
-//   if (global_plan_.poses.empty()) {
-//     throw nav2_core::PlannerException("Received plan with zero length");
-//   }
-
-//   // let's get the pose of the robot in the frame of the plan
-//   geometry_msgs::msg::PoseStamped robot_pose;
-//   if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
-//     throw nav2_core::PlannerException("Unable to transform robot pose into global plan's frame");
-//   }
-
-//   // We'll discard points on the plan that are outside the local costmap
-//   double max_costmap_extent = getCostmapMaxExtent();
-
-//   auto closest_pose_upper_bound =
-//     nav2_util::geometry_utils::first_after_integrated_distance(
-//     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
-
-//   // First find the closest pose on the path to the robot
-//   // bounded by when the path turns around (if it does) so we don't get a pose from a later
-//   // portion of the path
-//   auto transformation_begin =
-//     nav2_util::geometry_utils::min_by(
-//     global_plan_.poses.begin(), closest_pose_upper_bound,
-//     [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
-//       return euclidean_distance(robot_pose, ps);
-//     });
-
-//   // Find points up to max_transform_dist so we only transform them.
-//   auto transformation_end = std::find_if(
-//     transformation_begin, global_plan_.poses.end(),
-//     [&](const auto & pose) {
-//       return euclidean_distance(pose, robot_pose) > max_costmap_extent;
-//     });
-
-//   // Lambda to transform a PoseStamped from global frame to local
-//   auto transformGlobalPoseToLocal = [&](const auto & global_plan_pose) {
-//       geometry_msgs::msg::PoseStamped stamped_pose, transformed_pose;
-//       stamped_pose.header.frame_id = global_plan_.header.frame_id;
-//       stamped_pose.header.stamp = robot_pose.header.stamp;
-//       stamped_pose.pose = global_plan_pose.pose;
-//       transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose);
-//       transformed_pose.pose.position.z = 0.0;
-//       return transformed_pose;
-//     };
-
-//   // Transform the near part of the global plan into the robot's frame of reference.
-//   nav_msgs::msg::Path transformed_plan;
-//   std::transform(
-//     transformation_begin, transformation_end,
-//     std::back_inserter(transformed_plan.poses),
-//     transformGlobalPoseToLocal);
-//   transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
-//   transformed_plan.header.stamp = robot_pose.header.stamp;
-
-//   // Remove the portion of the global plan that we've already passed so we don't
-//   // process it on the next iteration (this is called path pruning)
-//   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
-//   global_path_pub_->publish(transformed_plan);
-
-//   if (transformed_plan.poses.empty()) {
-//     throw nav2_core::PlannerException("Resulting plan has 0 poses in it.");
-//   }
-
-//   return transformed_plan;
-// }
 nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose){
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
@@ -256,6 +169,46 @@ int Find_target_index(vehicleState state, nav_msgs::msg::Path &local_path){
 
 
   return index;
+}
+
+vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
+  vector<double> sp(wp.size());
+  double kp = 0.5;
+  for (size_t i = 0; i < wp.size()-1; i++)
+  {
+    // get next point on from or back
+    bool backward_motion = false;
+    Matrix4x4 T_map_pn,T_map_pnp1;
+    T_map_pn << cos(wp[i].yaw), -sin(wp[i].yaw) ,0 , wp[i].x,
+                sin(wp[i].yaw), cos(wp[i].yaw), 0 , wp[i].y,
+                0, 0, 1, 0,
+                0, 0, 0, 1;
+    T_map_pnp1 << cos(wp[i+1].yaw), -sin(wp[i+1].yaw) ,0 , wp[i+1].x,
+                sin(wp[i+1].yaw), cos(wp[i+1].yaw), 0 , wp[i+1].y,
+                0, 0, 1, 0,
+                0, 0, 0, 1;
+    Matrix4x4 T_pn_pnp1 = T_map_pn.inverse() * T_map_pnp1;
+    float next_dir = atan2(T_pn_pnp1(1,0), T_pn_pnp1(0,0));
+    if(next_dir < -M_PI_2 || next_dir > M_PI_2){
+      backward_motion = true;
+    }
+    // curvature constraint
+    curvature_list.push_back(cal_K(wp, i));
+    double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(curvature_list[i]));
+
+    // goal constrain
+    double distance_to_goal = std::hypot(state.x - wp.back().x, state.y - wp.back().y);
+    double max_v_distance = kp*distance_to_goal;
+    max_v_distance = std::max((double)v_min, max_v_distance)*((backward_motion==true)?-1:1);
+    sp.back() = max_v_distance; // set last point speed profile as dynamic
+
+    // get speed
+    if(!backward_motion)
+      sp[i] = (std::min((double)fv_max, std::min(max_v_curvature,max_v_distance)));
+    else
+      sp[i] = (-std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)));
+  }
+  return sp;
 }
 
 // TODO: must finish this function, this function is to receive global plan 
@@ -310,7 +263,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   robot_state_ = vehicleState{pose.pose.position.x,pose.pose.position.y,get_yaw(pose), speed.linear.x,kesi_};
 
-  RCLCPP_INFO(logger_,"pos %f %f",pose.pose.position.x,pose.pose.position.y);
+  // RCLCPP_INFO(logger_,"pos %f %f",pose.pose.position.x,pose.pose.position.y);
 
   // lqr 
   // get closest point
@@ -325,19 +278,22 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   target_pub_->publish(target_pose);
 
   // std::cout << "path len: " << global_plan_.poses.size()  << " target index: " << target_index << " Point: " << "[" <<Point.x << "," << Point.y << "," << Point.yaw << "]" << std::endl;
-
-  double K = cal_K(wps,target_index);
+  vector<double> k_list;
+  vector<double> sp = get_speed_profile(robot_state_,0.5,0.3,0.1,0.30,wps,k_list);
+  // double K = cal_K(wps,target_index);
   // std::cout << "K: " << K << std::endl;
+  double K = k_list[target_index];
   double kesi = atan2(L_ * K, 1);
-  // std::cout << "kesi: " << kesi << std::endl;
-  double Q[5] = {10.0,1.0,1,1,1};
-  double R[2] = {1,1};
+  // std::cout << "K " << K << std::endl;
+  double Q[5] = {8.0,1.0,1,1,1};
+  double R[2] = {5,5};
 
   U U_r;
+  U_r.v = sp[target_index];
 
-  double distance_to_goal = std::hypot(pose.pose.position.x - global_plan_.poses[global_plan_.poses.size()-1].pose.position.x,pose.pose.position.y - global_plan_.poses[global_plan_.poses.size()-1].pose.position.y);
-  double Kp = 0.5;
-  U_r.v = Kp * distance_to_goal;
+  // double distance_to_goal = std::hypot(pose.pose.position.x - global_plan_.poses[global_plan_.poses.size()-1].pose.position.x,pose.pose.position.y - global_plan_.poses[global_plan_.poses.size()-1].pose.position.y);
+  // double Kp = 0.5;
+  // U_r.v = Kp * distance_to_goal;
 
   if(goal_checker->isGoalReached(pose.pose, global_plan_.poses.back().pose , speed)){
     U_r.v = 0;
@@ -361,7 +317,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   cmd_vel.twist.angular.z = control.v*tan(control.kesi)/L_;
 
   cmd_vel.twist.linear.x = std::clamp(cmd_vel.twist.linear.x,-0.5,0.5);
-  // cmd_vel.twist.angular.z = std::clamp(cmd_vel.twist.angular.z,-1.0,1.0);
+  cmd_vel.twist.angular.z = std::clamp(cmd_vel.twist.angular.z,-2.0,2.0);
 
   // auto [X_vec, U] = problem_->lqrSolve(x_init);
 

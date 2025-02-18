@@ -94,6 +94,8 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const geometry_msgs::msg::Twist & /*speed */,
     nav2_core::GoalChecker * /*goal_checker*/) override;
 
+  vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list);
+
   /**
    * @brief nav2_core setPlan - Sets the global plan
    * @param path The global plan

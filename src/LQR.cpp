@@ -1,5 +1,6 @@
 #include <iostream>
 #include "lqr_controller/LQR.hpp"
+#include <unsupported/Eigen/KroneckerProduct>
  
 using namespace std;
  
@@ -50,6 +51,7 @@ void LQR::param_struct() {
 }
  
 Matrix2x5 LQR::cal_Riccati() {
+	using namespace Eigen;
 	int N = 1000;//迭代终止次数
 	double err = 100;//误差值
 	double err_tolerance = 0.01;//误差收敛阈值
@@ -68,13 +70,12 @@ Matrix2x5 LQR::cal_Riccati() {
 		if(err < err_tolerance)//
 		{
 			P = Pn;
-			cout << "迭代次数" << iter_num << endl;
+			// cout << "迭代次数" << iter_num << endl;
 			break;
 		}
 		P = Pn;
 	}
-	
-	//cout << "P矩阵为\n" << P << endl;
+	// cout << "P: " << P << endl;
 	//P = Q;
 	Matrix2x5 K = (R + B_d.transpose() * P * B_d).inverse() * B_d.transpose() * P * A_d;//反馈率K
 	return K;
@@ -96,18 +97,18 @@ U LQR::cal_vel() {
 					0, 					0	, 		  1,  0,
 					0, 					0	, 		  0,  1	;
 
-	cout << "T_map_robot矩阵为:\n" << T_map_robot << endl;
+	// cout << "T_map_robot矩阵为:\n" << T_map_robot << endl;
 
 	T_map_ref_p << cos(yaw_d),  -sin(yaw_d), 0 , x_d, 
 					sin(yaw_d),  cos(yaw_d), 0 , y_d, 
 					0, 					0	, 		  1,  0,
 					0, 					0	, 		  0,  1	;
 
-	cout << "T_map_ref_p矩阵为:\n" << T_map_ref_p << endl;
+	// cout << "T_map_ref_p矩阵为:\n" << T_map_ref_p << endl;
 
 	Matrix4x4 T_p_robot = T_map_ref_p.inverse() * T_map_robot;
 
-	cout << "T_p_robot矩阵为:\n" << T_p_robot << endl;
+	// cout << "T_p_robot矩阵为:\n" << T_p_robot << endl;
 
 	double e = T_p_robot(1,3);//hypot(x_car - x_d, y_car - y_d);
 	// double e = hypot(x_car - x_d, y_car - y_d);
@@ -137,7 +138,7 @@ U LQR::cal_vel() {
 	// cout << "反馈增益K为：\n" << K << endl;
 	// cout << "控制输入U为：\n" << U << endl;
 	
-	output.v = U[1]* T + v_car;
+	output.v = U[1]* T + v_d;
 	output.a = U[1];
 	output.kesi = U[0] + kesi_d;
 	return output;
