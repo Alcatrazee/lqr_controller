@@ -4,6 +4,7 @@
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
 #include <iterator>
+#include <nav2_util/geometry_utils.hpp>
 #include <nav_msgs/msg/detail/path__struct.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
@@ -55,6 +56,7 @@ void LqrController::configure(
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
+  cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::
   FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -87,10 +89,11 @@ void LqrController::activate()
   global_path_pub_->on_activate();
   lqr_path_pub_->on_activate();
   target_pub_->on_activate();
+  cusp_pub_->on_activate();
   // Remove these lines if publishers aren't needed
   
   // target_arc_pub_->on_activate();
-  // cusp_pub_->on_activate();
+  
   
   // Add callback for dynamic parameters
   auto node = node_.lock();
@@ -115,9 +118,63 @@ void LqrController::deactivate()
   dyn_params_handler_.reset();
 }
 
+void LqrController::removeDuplicatedPathPoint(nav_msgs::msg::Path & path)
+{
+  for(size_t i=1;i<path.poses.size();i++){
+    if(path.poses[i].pose.position.x == path.poses[i-1].pose.position.x &&
+      path.poses[i].pose.position.y == path.poses[i-1].pose.position.y &&
+      path.poses[i].pose.position.z == path.poses[i-1].pose.position.z &&
+      path.poses[i].pose.orientation.x == path.poses[i-1].pose.orientation.x &&
+      path.poses[i].pose.orientation.y == path.poses[i-1].pose.orientation.y &&
+      path.poses[i].pose.orientation.z == path.poses[i-1].pose.orientation.z){
+        
+      path.poses.erase(path.poses.begin() + i);
+      RCLCPP_INFO(logger_, "Removed duplicate pose");
+    }
+  }
+}
+
+vector<int> LqrController::find_cusp(const nav_msgs::msg::Path & path){
+  vector<int> cusp_indexs;
+  // check if path is long enough to contain cusp
+  cusp_indexs.push_back(0);
+  if(path.poses.size()>3){
+    // find cusp based on vector of each points
+    for(size_t i=1;i<=path.poses.size()-2;++i){ 
+      Eigen::Vector2d vec_ab,vec_bc;
+      vec_ab << path.poses[i].pose.position.x - path.poses[i-1].pose.position.x, path.poses[i].pose.position.y - path.poses[i-1].pose.position.y;
+      vec_bc << path.poses[i+1].pose.position.x - path.poses[i].pose.position.x, path.poses[i+1].pose.position.y - path.poses[i].pose.position.y;
+      double dot_product = vec_ab(0)*vec_bc(0) + vec_ab(1)*vec_bc(1);
+      if(dot_product<0.0){
+        cusp_indexs.push_back(i);
+      }
+    }
+  }
+  cusp_indexs.push_back(path.poses.size()-1);
+  return cusp_indexs;
+}
+
 void LqrController::setPlan(const nav_msgs::msg::Path & path)
 {
+  // get global path
   global_plan_ = path;
+  // remove dulicated point so that we can use the path to find cusp index
+  removeDuplicatedPathPoint(global_plan_);
+  // get cusp index list
+  cusp_index_ = find_cusp(global_plan_);
+  // cut segament based on cusp index
+  path_segment_.clear();
+  for(size_t i=0;i<cusp_index_.size()-1;i++){
+    nav_msgs::msg::Path path_segment;
+    for(int j=cusp_index_[i];j<cusp_index_[i+1];j++){
+      path_segment.poses.push_back(global_plan_.poses[j]);
+    }
+    path_segment.header.frame_id = global_plan_.header.frame_id;
+    path_segment.header.stamp = clock_->now();
+    path_segment_.push_back(path_segment);
+  }
+  current_tracking_path_segment_ = 0;
+  // int cusp_num = 
 }
 
 double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
@@ -133,20 +190,22 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
   double costmap_radius = std::max(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2;
-  int index = Find_target_index(robot_pose,global_plan_);
+  int index = Find_target_index(robot_pose,path_segment_[current_tracking_path_segment_]);
 
   // fill local plan on the front
-  for (int i=index; i>0;--i) {
-    auto pose = global_plan_.poses[i];
-    if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
-      break;
-    }else{
-      local_path.poses.insert(local_path.poses.begin(),(pose));
-    }
-  }
+  // for (int i=index; i>0;--i) {
+  //   auto pose = global_plan_.poses[i];
+  //   if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
+  //     break;
+  //   }else{
+  //     local_path.poses.insert(local_path.poses.begin(),(pose));
+  //   }
+  // }
+  local_path.poses.insert(local_path.poses.begin(),path_segment_[current_tracking_path_segment_].poses[index]);
+
   // fill local 
-  for(size_t i=index;i<global_plan_.poses.size();++i){
-    auto pose = global_plan_.poses[i];
+  for(size_t i=index;i<path_segment_[current_tracking_path_segment_].poses.size();++i){
+    auto pose = path_segment_[current_tracking_path_segment_].poses[i];
     if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
       break;
     }else{
@@ -154,7 +213,7 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
     }
   }
 
-  local_path.header.frame_id = costmap_ros_->getGlobalFrameID();
+  local_path.header.frame_id = path_segment_[current_tracking_path_segment_].header.frame_id;
   local_path.header.stamp = rclcpp::Time();
   return local_path;
 }
@@ -185,8 +244,6 @@ int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & sta
       index += 1;
     }
   }
-
-
   return index;
 }
 
@@ -198,7 +255,7 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
+vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float bv_max,float /*v_min*/,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
   vector<double> sp(wp.size());
   double kp = 0.5;// TODO: parameterize it
   for (size_t i = 0; i < wp.size()-1; i++)
@@ -227,11 +284,12 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
     curvature_list.push_back(K);
     double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(curvature_list[i]));
 
-    // goal constrain
-    double distance_to_goal = std::hypot(state.x - wp.back().x, state.y - wp.back().y);
+    // goal constrain 
+    // TODO: rewrite here to compute distance in path length
+    double distance_to_goal = std::hypot(wp[i].x - path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
+                                       wp[i].y - path_segment_[current_tracking_path_segment_].poses.back().pose.position.y);
     double max_v_distance = kp*distance_to_goal;
-    max_v_distance = std::max((double)v_min, max_v_distance);
-    sp.back() = max_v_distance; // set last point speed profile as dynamic
+    // sp.back() = max_v_distance; // set last point speed profile as dynamic
 
     // get speed
     if(!backward_motion){
@@ -239,7 +297,7 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
     }else{
       sp[i] = -std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)); // backward motion profile
     }
-    
+    RCLCPP_INFO(logger_, "speed profile:%ld %f %f",i, sp[i],K);
   }
   return sp;
 }
@@ -269,7 +327,7 @@ bool LqrController::transformPose(
 geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & speed,
-  nav2_core::GoalChecker * /*goal_checker*/)
+  nav2_core::GoalChecker * goal_checker)
 {
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
@@ -281,7 +339,21 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   geometry_msgs::msg::PoseStamped global_pose;
   transformPose(global_plan_.header.frame_id,pose,global_pose);
 
-  // crop path inside costmap and publish it
+  geometry_msgs::msg::Pose pose_tolerance;
+  geometry_msgs::msg::Twist vel_tolerance;
+  goal_checker->getTolerances(pose_tolerance, vel_tolerance);
+
+  double dist_to_cusp_point = nav2_util::geometry_utils::euclidean_distance(global_pose,path_segment_[current_tracking_path_segment_].poses.back());
+  if(dist_to_cusp_point<min(pose_tolerance.position.x,pose_tolerance.position.y) && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
+    current_tracking_path_segment_++;
+  }
+  geometry_msgs::msg::PointStamped cusp_point;
+  cusp_point.point.x = path_segment_[current_tracking_path_segment_].poses.back().pose.position.x;
+  cusp_point.point.y = path_segment_[current_tracking_path_segment_].poses.back().pose.position.y;
+  cusp_point.header.stamp = clock_->now();
+  cusp_point.header.frame_id = path_segment_[current_tracking_path_segment_].header.frame_id;
+  cusp_pub_->publish(cusp_point);
+  // 
   nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose);
   // if robot is not properly localized, use global plan instead
   if(local_plan.poses.size() == 0){
@@ -353,13 +425,21 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   
   cmd_vel.twist.linear.x = control.v;
   cmd_vel.twist.angular.z = control.v*tan(control.kesi)/L_;
-
-  cmd_vel.twist.linear.x = std::clamp(cmd_vel.twist.linear.x,-0.5,0.5);
-  cmd_vel.twist.angular.z = std::clamp(cmd_vel.twist.angular.z,-2.0,2.0);
+  kesi_ = control.kesi;
 
 
-  // cmd_vel.twist.angular.z = 0;
+  if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
+    double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
+    RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
+    if(dist_to_goal< min(pose_tolerance.position.x,pose_tolerance.position.y)/2){
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.angular.z= 0;
+      RCLCPP_INFO(logger_,"goal reached -- from controller plugin");
+    }
+  }
+  
   // cmd_vel.twist.linear.x = 0;
+  // cmd_vel.twist.angular.z= 0;
 
   return cmd_vel;
 }

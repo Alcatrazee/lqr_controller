@@ -72,7 +72,7 @@ Matrix2x5 LQR::cal_Riccati() {
 		if(err < err_tolerance)//
 		{
 			P = Pn;
-			cout << "迭代次数" << iter_num << endl;
+			// cout << "迭代次数" << iter_num << endl;
 			break;
 		}
 		P = Pn;
@@ -124,11 +124,11 @@ U LQR::cal_vel() {
 		   v_car-v_d;	// velocity error
 	
 	// cout << "X_e矩阵为:\n" << X_e << endl;
-	cout << "X_e" << endl;
-	for(auto i :X_e){
-		cout << std::fixed << std::setprecision(5) << i << "\t";
-	}
-	cout << endl;
+	// cout << "X_e" << endl;
+	// for(auto i :X_e){
+	// 	cout << std::fixed << std::setprecision(5) << i << "\t";
+	// }
+	// cout << endl;
 
 	Matrix2x1 U = -K * X_e;
 

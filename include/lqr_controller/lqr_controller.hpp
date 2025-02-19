@@ -121,7 +121,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * or in absolute values in false case.
    */
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
-
+  void removeDuplicatedPathPoint(nav_msgs::msg::Path & path);
   /**
    * @brief Callback executed when a parameter change is detected
    * @param event ParameterEvent message
@@ -133,6 +133,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
 
+  vector<int> find_cusp(const nav_msgs::msg::Path & path);
   /**
    * @brief crop path within costmap
    * @param 
@@ -147,6 +148,9 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   rclcpp::Clock::SharedPtr clock_;
 
   tf2::Duration transform_tolerance_;
+  int current_tracking_path_segment_ = 0;
+  vector<int> cusp_index_;
+  vector<nav_msgs::msg::Path> path_segment_;
 
   nav_msgs::msg::Path global_plan_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
