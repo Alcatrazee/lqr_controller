@@ -13,7 +13,7 @@ find_package(pluginlib REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(backward_ros REQUIRED)
+# find_package(backward_ros REQUIRED)
 
 nav2_package()
 set(CMAKE_CXX_STANDARD 17)
@@ -57,7 +57,7 @@ install(DIRECTORY include/
 )
 
 install(
-  DIRECTORY config launch
+  DIRECTORY # config launch
   DESTINATION share/${PROJECT_NAME}
 )
 

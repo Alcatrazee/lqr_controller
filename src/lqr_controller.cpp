@@ -166,7 +166,7 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   path_segment_.clear();
   for(size_t i=0;i<cusp_index_.size()-1;i++){
     nav_msgs::msg::Path path_segment;
-    for(int j=cusp_index_[i];j<cusp_index_[i+1];j++){
+    for(int j=cusp_index_[i];j<=cusp_index_[i+1];j++){
       path_segment.poses.push_back(global_plan_.poses[j]);
     }
     path_segment.header.frame_id = global_plan_.header.frame_id;
@@ -193,15 +193,15 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
   int index = Find_target_index(robot_pose,path_segment_[current_tracking_path_segment_]);
 
   // fill local plan on the front
-  // for (int i=index; i>0;--i) {
-  //   auto pose = global_plan_.poses[i];
-  //   if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
-  //     break;
-  //   }else{
-  //     local_path.poses.insert(local_path.poses.begin(),(pose));
-  //   }
-  // }
-  local_path.poses.insert(local_path.poses.begin(),path_segment_[current_tracking_path_segment_].poses[index]);
+  for (int i=index; i>0;--i) {
+    auto pose = path_segment_[current_tracking_path_segment_].poses[i];
+    if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
+      break;
+    }else{
+      local_path.poses.insert(local_path.poses.begin(),(pose));
+    }
+  }
+  // local_path.poses.insert(local_path.poses.begin(),path_segment_[current_tracking_path_segment_].poses[index]);
 
   // fill local 
   for(size_t i=index;i<path_segment_[current_tracking_path_segment_].poses.size();++i){
@@ -255,9 +255,9 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float bv_max,float /*v_min*/,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
+vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
   vector<double> sp(wp.size());
-  double kp = 0.5;// TODO: parameterize it
+  double kp = 1.0;// TODO: parameterize it
   for (size_t i = 0; i < wp.size()-1; i++)
   {
     // get next point on from or back
@@ -288,7 +288,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     // TODO: rewrite here to compute distance in path length
     double distance_to_goal = std::hypot(wp[i].x - path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
                                        wp[i].y - path_segment_[current_tracking_path_segment_].poses.back().pose.position.y);
-    double max_v_distance = kp*distance_to_goal;
+    double max_v_distance = std::max(kp*distance_to_goal,(double)v_min);
     // sp.back() = max_v_distance; // set last point speed profile as dynamic
 
     // get speed
@@ -297,7 +297,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     }else{
       sp[i] = -std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)); // backward motion profile
     }
-    RCLCPP_INFO(logger_, "speed profile:%ld %f %f",i, sp[i],K);
+    // RCLCPP_INFO(logger_, "speed profile:%ld %f %f",i, sp[i],K);
   }
   return sp;
 }
@@ -344,7 +344,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   goal_checker->getTolerances(pose_tolerance, vel_tolerance);
 
   double dist_to_cusp_point = nav2_util::geometry_utils::euclidean_distance(global_pose,path_segment_[current_tracking_path_segment_].poses.back());
-  if(dist_to_cusp_point<min(pose_tolerance.position.x,pose_tolerance.position.y) && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
+  
+  if(dist_to_cusp_point<(min(pose_tolerance.position.x,pose_tolerance.position.y)*2) && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
     current_tracking_path_segment_++;
   }
   geometry_msgs::msg::PointStamped cusp_point;
@@ -392,8 +393,9 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // compute curvature and apply constraints to speed
   vector<double> k_list;
+  double max_vx = 1.50;
   // TODO: speed constraints made to be parameters
-  vector<double> sp = get_speed_profile(robot_state_,0.5,0.3,0.1,0.20,wps,k_list);
+  vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list);
   // get curvature of tracking point
   double K = k_list[target_index];
   double kesi = atan2(L_ * K, 1);   // reference steer angle
@@ -405,12 +407,12 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // reference input
   U U_r;
   U_r.v = sp[target_index];   // apply reference speed
-  U_r.v = std::clamp(U_r.v,-0.50,0.5);
+  U_r.v = std::clamp(U_r.v,-0.50,max_vx);
   U_r.kesi = kesi*(sp[target_index]>0?1:-1);
 
   // TODO: make L parameter
   dt_ = rclcpp::Clock().now().seconds() - last_control_time;
-  L_ = 0.1;
+  L_ = 0.56;
 
   last_control_time = rclcpp::Clock().now().seconds();
 
