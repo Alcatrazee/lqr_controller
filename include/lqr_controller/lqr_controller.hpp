@@ -94,7 +94,9 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const geometry_msgs::msg::Twist & /*speed */,
     nav2_core::GoalChecker * /*goal_checker*/) override;
 
-  vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list);
+  vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double>& distance_to_obst);
+  
+  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path);
 
   /**
    * @brief nav2_core setPlan - Sets the global plan
@@ -151,6 +153,9 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   int current_tracking_path_segment_ = 0;
   vector<int> cusp_index_;
   vector<nav_msgs::msg::Path> path_segment_;
+  double encounter_obst_moment_; // moment of stopping due to obstacle
+  bool encounter_obst_moment_logged_; // whether encounter obstacle moment is logged
+  double obstacle_timeout_;
 
   nav_msgs::msg::Path global_plan_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;

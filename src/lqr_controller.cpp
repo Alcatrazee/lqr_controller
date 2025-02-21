@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <atomic>
 #include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
@@ -11,21 +10,13 @@
 #include <rclcpp/time.hpp>
 #include <string>
 #include <iostream>
-#include <fstream>
-#include <limits>
 #include <memory>
 #include <vector>
-#include <utility>
 #include <cmath>
-
 #include "lqr_controller/lqr_controller.hpp"
-#include "lqr_controller/problem.hpp"
-
-#include "angles/angles.h"
 #include "nav2_core/exceptions.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
-
 #include "lqr_controller/Tool.h"
 #include <algorithm>
 
@@ -57,12 +48,13 @@ void LqrController::configure(
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
+
   // initialize collision checker and set costmap
-  collision_checker_ = std::make_unique<nav2_costmap_2d::
-  FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
+  collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
 
+  encounter_obst_moment_logged_ = false;
 }
 
 void LqrController::cleanup()
@@ -174,6 +166,7 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
     path_segment_.push_back(path_segment);
   }
   current_tracking_path_segment_ = 0;
+  encounter_obst_moment_logged_ = false;
   // int cusp_num = 
 }
 
@@ -247,6 +240,47 @@ int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & sta
   return index;
 }
 
+vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path)
+{
+  vector<double> distance_list;
+  uint32_t path_length = path.poses.size();
+  nav_msgs::msg::Path obst_free_path;
+  // find obstacle index in path
+  int obst_index = -1;
+  for(size_t i = 0; i < path_length; i++){
+    // push back pose
+    obst_free_path.poses.push_back(path.poses[i]);
+    double yaw = get_yaw(path.poses[i]);
+    // check ith footprint cost, if cost is equal to lethal, then that is the obstacle
+    double footprint_cost = collision_checker_->footprintCostAtPose(path.poses[i].pose.position.x, path.poses[i].pose.position.y, yaw,costmap_ros_->getRobotFootprint());
+    if (footprint_cost == static_cast<double>(nav2_costmap_2d::NO_INFORMATION) && costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
+    {
+      RCLCPP_WARN(logger_, "Footprint cost is unknown, collision check failed");
+    }else if(footprint_cost == static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) || 
+              footprint_cost == static_cast<double>(nav2_costmap_2d::LETHAL_OBSTACLE)){
+      obst_index = i;
+      RCLCPP_INFO(logger_, "found obstacle");
+      break;
+    }
+  }
+
+  // find cost
+  if(obst_index!=-1){
+    for(uint32_t i = 0; i < path_length; i++){
+      double distance = 0;
+      if(i<(uint32_t)obst_index){
+        distance = nav2_util::geometry_utils::calculate_path_length(obst_free_path, i);
+      }
+      distance_list.push_back(distance);
+    }
+  }else{
+    for(uint32_t i = 0; i < path_length; i++){
+      distance_list.push_back(-1);
+    }
+  }
+  return distance_list;
+}
+
 void LqrController::remove_duplicated_points(vector<waypoint>& points){
   for(size_t i=0;i<points.size()-1;i++){
     if(points[i].x == points[i+1].x && points[i].y == points[i+1].y && points[i+1].yaw == points[i+1].yaw){
@@ -255,9 +289,10 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list){
+vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst){
   vector<double> sp(wp.size());
   double kp = 1.0;// TODO: parameterize it
+
   for (size_t i = 0; i < wp.size()-1; i++)
   {
     // get next point on from or back
@@ -291,13 +326,28 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     double max_v_distance = std::max(kp*distance_to_goal,(double)v_min);
     // sp.back() = max_v_distance; // set last point speed profile as dynamic
 
+    // obstacle constraint
+    // TODO: parameterize these
+    double obst_slow_dist = 1.0,obst_stop_dist = 0.4;
+    double obst_min_speed = 0.1;
+    double obst_speed_control_k = (fv_max - obst_min_speed)/(obst_slow_dist - obst_stop_dist);
+    double obst_speed_control_b = fv_max - obst_speed_control_k*obst_slow_dist;
+    double max_v_obst = fv_max;
+    if(distance_to_obst[i] < obst_stop_dist && distance_to_obst[i]>0){
+      max_v_obst = 0;
+    }else if(distance_to_obst[i] < obst_slow_dist && distance_to_obst[i] > obst_stop_dist){
+      max_v_obst = obst_speed_control_k*distance_to_obst[i]+obst_speed_control_b;
+    }
+    
+    // RCLCPP_INFO(logger_, "distance to obst: %ld %f speed:%f",i,distance_to_obst[i],max_v_obst);
+
     // get speed
     if(!backward_motion){
-      sp[i] = std::min((double)fv_max, std::min(max_v_curvature,max_v_distance));   // forward motion profile
+      sp[i] = std::min({(double)fv_max,max_v_curvature,max_v_distance,max_v_obst});   // forward motion profile
     }else{
-      sp[i] = -std::min((double)abs(bv_max), std::min(max_v_curvature,max_v_distance)); // backward motion profile
+      sp[i] = -std::min({(double)fv_max,max_v_curvature,max_v_distance,max_v_obst}); // backward motion profile
     }
-    // RCLCPP_INFO(logger_, "speed profile:%ld %f %f",i, sp[i],K);
+    // RCLCPP_INFO(logger_, "speed profile:%ld %f %f %f",i, sp[i],K,distace_to_obst[i]);
   }
   return sp;
 }
@@ -393,9 +443,30 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // compute curvature and apply constraints to speed
   vector<double> k_list;
-  double max_vx = 1.50;
+  double max_vx = 0.50;
   // TODO: speed constraints made to be parameters
-  vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list);
+  vector<double> obstacle_distance_list = get_path_obst_distance(local_plan);
+  vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list,obstacle_distance_list);
+  double obst_slow_dist = 1.0,obst_stop_dist = 0.4;
+  obstacle_timeout_ = 10.0; // TODO: set as parameter
+  if(obstacle_distance_list[target_index]<=obst_stop_dist && sp[target_index] == 0){
+    RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+    if(encounter_obst_moment_logged_ == false){
+      encounter_obst_moment_logged_ = true;
+      encounter_obst_moment_ = clock_->now().seconds();
+    }else{
+      double dt = clock_->now().seconds() - encounter_obst_moment_;
+      RCLCPP_INFO(logger_,"obstacle dt: %lf",dt);
+      if(dt>obstacle_timeout_){
+        throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
+      }
+    }
+  }else if(obstacle_distance_list[target_index]<=obst_slow_dist && sp[target_index] != 0){
+    RCLCPP_WARN(logger_,"obstacle closing in, slowing down!");
+    encounter_obst_moment_logged_ = false;
+  }else{
+    encounter_obst_moment_logged_ = false;
+  }
   // get curvature of tracking point
   double K = k_list[target_index];
   double kesi = atan2(L_ * K, 1);   // reference steer angle
@@ -432,7 +503,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
-    RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
+    // RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
     if(dist_to_goal< min(pose_tolerance.position.x,pose_tolerance.position.y)/2){
       cmd_vel.twist.linear.x = 0;
       cmd_vel.twist.angular.z= 0;
