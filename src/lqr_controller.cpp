@@ -42,7 +42,78 @@ void LqrController::configure(
   plugin_name_ = name;
   logger_ = node->get_logger();
   clock_ = node->get_clock();
+
+  // speed related
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_fvx", rclcpp::ParameterValue(0.50));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_bvx", rclcpp::ParameterValue(0.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.50));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_lateral_accel", rclcpp::ParameterValue(0.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_w_accel", rclcpp::ParameterValue(0.4));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".dead_band_speed", rclcpp::ParameterValue(0.1));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".approach_velocity_gain", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_obst_stop_dist", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_obst_slow_dist", rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".vehicle_L", rclcpp::ParameterValue(0.10));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".inversion_xy_tolerance", rclcpp::ParameterValue(0.10));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".latteral_err_penalty", rclcpp::ParameterValue(8.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".latteral_err_dot_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".angle_err_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".angle_err_dot_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".v_err_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".w_effort_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
+
+  node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
+  node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
+  node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
+  node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
+  node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
+  node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
+  node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
+  node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
+  node->get_parameter(plugin_name_ + ".approach_velocity_gain", approach_v_gain_);
+  node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
+  node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
+  node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
+  node->get_parameter(plugin_name_ + ".path_obst_slow_dist", obst_slow_dist_);
+  node->get_parameter(plugin_name_ + ".vehicle_L", vehicle_L_);
+  node->get_parameter(plugin_name_ + ".inversion_xy_tolerance", inversion_xy_tolerance_);
+  node->get_parameter(plugin_name_ + ".latteral_err_penalty", Q_[0]);
+  node->get_parameter(plugin_name_ + ".latteral_err_dot_penalty", Q_[1]);
+  node->get_parameter(plugin_name_ + ".angle_err_penalty", Q_[2]);
+  node->get_parameter(plugin_name_ + ".angle_err_dot_penalty", Q_[3]);
+  node->get_parameter(plugin_name_ + ".v_err_penalty", Q_[4]);
+  node->get_parameter(plugin_name_ + ".w_effort_penalty", R_[0]);
+  node->get_parameter(plugin_name_ + ".acc_effort_penalty", R_[1]);
   
+  obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
+  obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
@@ -304,7 +375,6 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
 
 vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst){
   vector<double> sp(wp.size());
-  double kp = 1.0;// TODO: parameterize it
 
   for (size_t i = 0; i < wp.size()-1; i++)
   {
@@ -336,20 +406,16 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     // TODO: rewrite here to compute distance in path length
     double distance_to_goal = std::hypot(wp[i].x - path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
                                        wp[i].y - path_segment_[current_tracking_path_segment_].poses.back().pose.position.y);
-    double max_v_distance = std::max(kp*distance_to_goal,(double)v_min);
+    double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
     // sp.back() = max_v_distance; // set last point speed profile as dynamic
 
     // obstacle constraint
-    // TODO: parameterize these
-    double obst_slow_dist = 2.0,obst_stop_dist = 0.5;
-    double obst_min_speed = 0.1;
-    double obst_speed_control_k = (fv_max - obst_min_speed)/(obst_slow_dist - obst_stop_dist);
-    double obst_speed_control_b = fv_max - obst_speed_control_k*obst_slow_dist;
+    
     double max_v_obst = fv_max;
-    if(distance_to_obst[i] < obst_stop_dist && distance_to_obst[i]>0){
+    if(distance_to_obst[i] < obst_stop_dist_ && distance_to_obst[i]>0){
       max_v_obst = 0;
-    }else if(distance_to_obst[i] < obst_slow_dist && distance_to_obst[i] > obst_stop_dist){
-      max_v_obst = obst_speed_control_k*distance_to_obst[i]+obst_speed_control_b;
+    }else if(distance_to_obst[i] < obst_slow_dist_ && distance_to_obst[i] > obst_stop_dist_){
+      max_v_obst = obst_speed_control_k_*distance_to_obst[i]+obst_speed_control_b_;
     }
     
     // RCLCPP_INFO(logger_, "distance to obst: %ld %f speed:%f",i,distance_to_obst[i],max_v_obst);
@@ -408,7 +474,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   double dist_to_cusp_point = nav2_util::geometry_utils::euclidean_distance(global_pose,path_segment_[current_tracking_path_segment_].poses.back());
   
-  if(dist_to_cusp_point<(min(pose_tolerance.position.x,pose_tolerance.position.y)*2) && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
+  if(dist_to_cusp_point<inversion_xy_tolerance_ && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
     current_tracking_path_segment_++;
   }
   geometry_msgs::msg::PointStamped cusp_point;
@@ -456,13 +522,9 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // compute curvature and apply constraints to speed
   vector<double> k_list;
-  double max_vx = 01.00;
-  // TODO: speed constraints made to be parameters
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
-  vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list,obstacle_distance_list);
-  double obst_slow_dist = 2.0,obst_stop_dist = 0.5;
-  obstacle_timeout_ = 10.0; // TODO: set as parameter
-  if(obstacle_distance_list[target_index]<=obst_stop_dist && sp[target_index] == 0){
+  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,k_list,obstacle_distance_list);
+  if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     if(encounter_obst_moment_logged_ == false){
       encounter_obst_moment_logged_ = true;
@@ -474,7 +536,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
         throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
       }
     }
-  }else if(obstacle_distance_list[target_index]<=obst_slow_dist && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
+  }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
     RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
     encounter_obst_moment_logged_ = false;
   }else{
@@ -482,25 +544,18 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }
   // get curvature of tracking point
   double K = k_list[target_index];
-  double kesi = atan2(L_ * K, 1);   // reference steer angle
-
-  // TODO: these matrix should be made as parameters
-  double Q[5] = {8.0,1.0,1,1,1};
-  double R[2] = {1,1};
+  double kesi = atan2(vehicle_L_ * K, 1);   // reference steer angle
 
   // reference input
   U U_r;
   U_r.v = sp[target_index];   // apply reference speed
-  U_r.v = std::clamp(U_r.v,-0.50,max_vx);
-  U_r.kesi = kesi*(sp[target_index]>0?1:-1);
+  U_r.kesi = kesi*(sp[target_index]>=0?1:-1);
 
-  // TODO: make L parameter
   dt_ = rclcpp::Clock().now().seconds() - last_control_time;
-  L_ = 0.56;
 
   last_control_time = rclcpp::Clock().now().seconds();
 
-  lqr_controller_->initial(L_, dt_, robot_state_, Point, U_r, Q, R);
+  lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
   // std::cout << "compute u" << std::endl;
   U control = lqr_controller_->cal_vel();//计算输入[v, kesi]
@@ -510,7 +565,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // std::cout << "u kesi: " << U_r.kesi << std::endl;
   
   cmd_vel.twist.linear.x = control.v;
-  cmd_vel.twist.angular.z = control.v*tan(control.kesi)/L_;
+  cmd_vel.twist.angular.z = control.v*tan(control.kesi)/vehicle_L_;
   kesi_ = control.kesi;
 
 

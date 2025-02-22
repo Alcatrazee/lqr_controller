@@ -7,7 +7,7 @@
  
 using namespace std;
  
-void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U_r, double *Q_, double *R_) {
+void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U_r, double *Q_arr, double *R_arr) {
  
 	L = L_;
 	T = T_;
@@ -16,10 +16,10 @@ void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U
 	v_d = U_r.v;kesi_d = U_r.kesi;
  
 	for (int i = 0; i < 5; i++) {
-		Q5[i] = Q_[i];
+		Q5[i] = Q_arr[i];
 	}
 	for (int j = 0; j < 2; j++) {
-		R2[j] = R_[j];
+		R2[j] = R_arr[j];
 	}
 }
  

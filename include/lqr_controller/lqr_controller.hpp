@@ -156,6 +156,18 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double encounter_obst_moment_; // moment of stopping due to obstacle
   bool encounter_obst_moment_logged_; // whether encounter obstacle moment is logged
   double obstacle_timeout_;
+  double max_fvx_,max_bvx_,max_wz_;
+  double max_lin_acc_,max_lateral_accel_,max_w_acc_;
+  double dead_band_speed_;
+  double approach_velocity_scaling_dist_,approach_v_gain_;
+  bool use_obstacle_stopping_;
+  double obst_speed_control_k_,obst_speed_control_b_;
+  double obst_stop_dist_,obst_slow_dist_;
+  double vehicle_L_;
+  double inversion_xy_tolerance_;
+  double Q_[5];
+  double R_[2];
+
 
   nav_msgs::msg::Path global_plan_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
