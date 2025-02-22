@@ -183,12 +183,14 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
   double costmap_radius = std::max(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2;
+  const double circumscribed_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
   int index = Find_target_index(robot_pose,path_segment_[current_tracking_path_segment_]);
 
   // fill local plan on the front
   for (int i=index; i>0;--i) {
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
-    if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
+    double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
+    if(distance>(costmap_radius - 2 * circumscribed_radius)){
       break;
     }else{
       local_path.poses.insert(local_path.poses.begin(),(pose));
@@ -240,26 +242,37 @@ int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & sta
   return index;
 }
 
-vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path)
+vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose)
 {
   vector<double> distance_list;
   uint32_t path_length = path.poses.size();
   nav_msgs::msg::Path obst_free_path;
   // find obstacle index in path
   int obst_index = -1;
+  const double circumscribed_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
+  // RCLCPP_INFO(logger_, "circumscribed_radius radius: %f circum %f ",circumscribed_radius,costmap_ros_->getLayeredCostmap()->getCircumscribedRadius());
   for(size_t i = 0; i < path_length; i++){
     // push back pose
+    // check if pose is outside of costmap, if pose is outside of costmap, it will return wrong cost
+    double check_pose_distance = nav2_util::geometry_utils::euclidean_distance(path.poses[i],robot_pose)+circumscribed_radius;
+    // RCLCPP_INFO(logger_,"checking  (%lf,%lf) dist:%f",path.poses[i].pose.position.x,path.poses[i].pose.position.y,check_pose_distance);
+    if( check_pose_distance >= min(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2){
+      // RCLCPP_INFO(logger_,"current checking pose (%lf,%lf) is out of range",path.poses[i].pose.position.x,path.poses[i].pose.position.y);
+      break;
+    }
+    
     obst_free_path.poses.push_back(path.poses[i]);
     double yaw = get_yaw(path.poses[i]);
     // check ith footprint cost, if cost is equal to lethal, then that is the obstacle
     double footprint_cost = collision_checker_->footprintCostAtPose(path.poses[i].pose.position.x, path.poses[i].pose.position.y, yaw,costmap_ros_->getRobotFootprint());
+    // RCLCPP_INFO(logger_,"cost at %ld is %f",i,footprint_cost);
     if (footprint_cost == static_cast<double>(nav2_costmap_2d::NO_INFORMATION) && costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
     {
       RCLCPP_WARN(logger_, "Footprint cost is unknown, collision check failed");
     }else if(footprint_cost == static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) || 
               footprint_cost == static_cast<double>(nav2_costmap_2d::LETHAL_OBSTACLE)){
       obst_index = i;
-      RCLCPP_INFO(logger_, "found obstacle");
+      // RCLCPP_INFO(logger_, "found obstacle in pose (%f,%f) ",obst_free_path.poses.back().pose.position.x, obst_free_path.poses.back().pose.position.y);
       break;
     }
   }
@@ -445,7 +458,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   vector<double> k_list;
   double max_vx = 0.50;
   // TODO: speed constraints made to be parameters
-  vector<double> obstacle_distance_list = get_path_obst_distance(local_plan);
+  vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list,obstacle_distance_list);
   double obst_slow_dist = 1.0,obst_stop_dist = 0.4;
   obstacle_timeout_ = 10.0; // TODO: set as parameter
@@ -461,8 +474,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
         throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
       }
     }
-  }else if(obstacle_distance_list[target_index]<=obst_slow_dist && sp[target_index] != 0){
-    RCLCPP_WARN(logger_,"obstacle closing in, slowing down!");
+  }else if(obstacle_distance_list[target_index]<=obst_slow_dist && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
+    RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
     encounter_obst_moment_logged_ = false;
   }else{
     encounter_obst_moment_logged_ = false;

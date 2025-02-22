@@ -96,7 +96,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
 
   vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double>& distance_to_obst);
   
-  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path);
+  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
 
   /**
    * @brief nav2_core setPlan - Sets the global plan
