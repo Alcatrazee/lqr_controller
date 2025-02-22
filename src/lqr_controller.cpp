@@ -341,7 +341,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
 
     // obstacle constraint
     // TODO: parameterize these
-    double obst_slow_dist = 1.0,obst_stop_dist = 0.4;
+    double obst_slow_dist = 2.0,obst_stop_dist = 0.5;
     double obst_min_speed = 0.1;
     double obst_speed_control_k = (fv_max - obst_min_speed)/(obst_slow_dist - obst_stop_dist);
     double obst_speed_control_b = fv_max - obst_speed_control_k*obst_slow_dist;
@@ -456,11 +456,11 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // compute curvature and apply constraints to speed
   vector<double> k_list;
-  double max_vx = 0.50;
+  double max_vx = 01.00;
   // TODO: speed constraints made to be parameters
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<double> sp = get_speed_profile(robot_state_,max_vx,0.5,0.1,0.50,wps,k_list,obstacle_distance_list);
-  double obst_slow_dist = 1.0,obst_stop_dist = 0.4;
+  double obst_slow_dist = 2.0,obst_stop_dist = 0.5;
   obstacle_timeout_ = 10.0; // TODO: set as parameter
   if(obstacle_distance_list[target_index]<=obst_stop_dist && sp[target_index] == 0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
