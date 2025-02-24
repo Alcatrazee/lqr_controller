@@ -94,7 +94,15 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const geometry_msgs::msg::Twist & /*speed */,
     nav2_core::GoalChecker * /*goal_checker*/) override;
 
-  vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double>& distance_to_obst);
+  vector<double> get_speed_profile(vehicleState state,
+    float fv_max,
+    float bv_max,
+    float v_min,
+    float max_lateral_accel,
+    vector<waypoint>& wp,
+    vector<double>& curvature_list,
+    vector<double>& distance_to_obst,
+    int path_offset);
   
   vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
 
@@ -104,7 +112,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    */
     void setPlan(const nav_msgs::msg::Path & path) override;
 
-  nav_msgs::msg::Path grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose);
+  nav_msgs::msg::Path grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset);
   void remove_duplicated_points(vector<waypoint>& points);
   int Find_target_index(const geometry_msgs::msg::PoseStamped & state, nav_msgs::msg::Path &local_path);
   /**

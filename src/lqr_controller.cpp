@@ -250,7 +250,7 @@ double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
   return yaw;
 }
 
-nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose){
+nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset){
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
   double costmap_radius = std::max(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2;
@@ -258,6 +258,7 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
   int index = Find_target_index(robot_pose,path_segment_[current_tracking_path_segment_]);
 
   // fill local plan on the front
+  int count = 0;
   for (int i=index; i>0;--i) {
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
     double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
@@ -265,14 +266,21 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
       break;
     }else{
       local_path.poses.insert(local_path.poses.begin(),(pose));
+      path_offset = i;
+      count++;
+      if(count > 3)
+        break;
     }
   }
   // local_path.poses.insert(local_path.poses.begin(),path_segment_[current_tracking_path_segment_].poses[index]);
+  // path_offset = index;
 
   // fill local 
   for(size_t i=index;i<path_segment_[current_tracking_path_segment_].poses.size();++i){
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
-    if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
+    double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
+    if(distance>(costmap_radius - circumscribed_radius)){
+    // if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
       break;
     }else{
       local_path.poses.push_back(pose);
@@ -325,7 +333,7 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
   for(size_t i = 0; i < path_length; i++){
     // push back pose
     // check if pose is outside of costmap, if pose is outside of costmap, it will return wrong cost
-    double check_pose_distance = nav2_util::geometry_utils::euclidean_distance(path.poses[i],robot_pose)+circumscribed_radius;
+    double check_pose_distance = nav2_util::geometry_utils::euclidean_distance(path.poses[i],robot_pose) + 2 * circumscribed_radius;
     // RCLCPP_INFO(logger_,"checking  (%lf,%lf) dist:%f",path.poses[i].pose.position.x,path.poses[i].pose.position.y,check_pose_distance);
     if( check_pose_distance >= min(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2){
       // RCLCPP_INFO(logger_,"current checking pose (%lf,%lf) is out of range",path.poses[i].pose.position.x,path.poses[i].pose.position.y);
@@ -373,7 +381,7 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst){
+vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst,int path_offset){
   vector<double> sp(wp.size());
 
   for (size_t i = 0; i < wp.size()-1; i++)
@@ -395,7 +403,11 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
       backward_motion = true;
     }
     // curvature constraint
-    double K = cal_K(wp, i);
+    double K = 0;
+    if(wp.size()>3){
+      K = cal_K(wp, i);
+    }
+
     if(isnan(K)){
       cerr << "K is nan, index: " << i << endl;
     }
@@ -404,10 +416,15 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
 
     // goal constrain 
     // TODO: rewrite here to compute distance in path length
-    double distance_to_goal = std::hypot(wp[i].x - path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
-                                       wp[i].y - path_segment_[current_tracking_path_segment_].poses.back().pose.position.y);
+    // double distance_to_goal = std::hypot(wp[i].x - path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
+    //                                    wp[i].y - path_segment_[current_tracking_path_segment_].poses.back().pose.position.y);
+    double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
     double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
     // sp.back() = max_v_distance; // set last point speed profile as dynamic
+
+    // RCLCPP_INFO(logger_, "%ldth (%lf,%lf)distance to goal(%lf,%lf): %f",i,wp[i].x,wp[i].y,
+    //   path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
+    //   path_segment_[current_tracking_path_segment_].poses.back().pose.position.y,distance_to_goal);
 
     // obstacle constraint
     
@@ -484,7 +501,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   cusp_point.header.frame_id = path_segment_[current_tracking_path_segment_].header.frame_id;
   cusp_pub_->publish(cusp_point);
   // 
-  nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose);
+  int path_offset = 0;
+  nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose,path_offset);
   // if robot is not properly localized, use global plan instead
   if(local_plan.poses.size() == 0){
     RCLCPP_ERROR(logger_,"local plan empty, trying to find waypoint via global plan.");
@@ -523,7 +541,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // compute curvature and apply constraints to speed
   vector<double> k_list;
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
-  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,k_list,obstacle_distance_list);
+  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,k_list,obstacle_distance_list,path_offset);
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     if(encounter_obst_moment_logged_ == false){
