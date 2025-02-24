@@ -61,8 +61,6 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".approach_velocity_gain", rclcpp::ParameterValue(1.0));
-  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
@@ -99,7 +97,6 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
-  node->get_parameter(plugin_name_ + ".approach_velocity_gain", approach_v_gain_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
   node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
   node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
@@ -117,6 +114,10 @@ void LqrController::configure(
   
   obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
   obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
+  if(approach_velocity_scaling_dist_!=0)
+    approach_v_gain_ = max_fvx_/approach_velocity_scaling_dist_;
+  else
+    approach_v_gain_ = 1.0;
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
@@ -714,13 +715,6 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           approach_velocity_scaling_dist_ = std::abs(parameter.as_double());
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
-        }
-      }else if(name == plugin_name_ + "approach_velocity_gain"){
-        if(parameter.as_double() < 0){
-          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          approach_v_gain_ = std::abs(parameter.as_double());
-        }else{
-          approach_v_gain_ = parameter.as_double();
         }
       }else if(name == plugin_name_ + "patient_encounter_obst"){
         if(parameter.as_double() < 0){
