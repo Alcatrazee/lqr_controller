@@ -384,7 +384,7 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
 vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst,int path_offset){
   vector<double> sp(wp.size());
 
-  for (size_t i = 0; i < wp.size()-1; i++)
+  for (size_t i = 0; i < wp.size(); i++)
   {
     // get next point on from or back
     bool backward_motion = false;
@@ -405,7 +405,13 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     // curvature constraint
     double K = 0;
     if(wp.size()>3){
-      K = cal_K(wp, i);
+      if(i >= wp.size()-3){
+        K = curvature_list[i-1] + (curvature_list[i-1]-curvature_list[i-2]);
+        RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
+      }else{
+        K = cal_K(wp, i);
+      }
+      
     }
 
     if(isnan(K)){
@@ -585,6 +591,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   cmd_vel.twist.linear.x = control.v;
   cmd_vel.twist.angular.z = control.v*tan(control.kesi)/vehicle_L_;
   kesi_ = control.kesi;
+  RCLCPP_INFO(logger_,"v:%.2f kesi:%.2f vx:%.2f vyaw:%.2f K:%.2f",control.v,kesi_,cmd_vel.twist.linear.x,cmd_vel.twist.angular.z,k_list[target_index]);
 
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
