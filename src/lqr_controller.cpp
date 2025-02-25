@@ -353,8 +353,7 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
     if (footprint_cost == static_cast<double>(nav2_costmap_2d::NO_INFORMATION) && costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
     {
       RCLCPP_WARN(logger_, "Footprint cost is unknown, collision check failed");
-    }else if(footprint_cost == static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) || 
-              footprint_cost == static_cast<double>(nav2_costmap_2d::LETHAL_OBSTACLE)){
+    }else if(footprint_cost > static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)){
       obst_index = i;
       // RCLCPP_INFO(logger_, "found obstacle in pose (%f,%f) ",obst_free_path.poses.back().pose.position.x, obst_free_path.poses.back().pose.position.y);
       break;
@@ -424,8 +423,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
       cerr << "K is nan, index: " << i << endl;
     }
     curvature_list.push_back(K);
-    double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(curvature_list[i]));
-
+    double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
     // goal constrain 
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
     double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
@@ -454,7 +452,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     }else{
       sp[i] = -std::min({(double)fv_max,max_v_curvature,max_v_distance,max_v_obst}); // backward motion profile
     }
-    RCLCPP_INFO(logger_, "speed profile:%ld %f %f %f",i, sp[i],K,distance_to_obst[i]);
+    // RCLCPP_INFO(logger_, "speed profile:%ld %f %f %f",i, sp[i],K,distance_to_obst[i]);
   }
   // RCLCPP_INFO(logger_,"curvature list size:%ld sp list size %ld",curvature_list.size(),sp.size());
   return sp;
@@ -594,10 +592,12 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // std::cout << "u kesi: " << U_r.kesi << std::endl;
   
+  // control.v = control.v*cos(control.kesi);
   cmd_vel.twist.linear.x = clamp(control.v,-max_bvx_,max_fvx_);
+  RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
   cmd_vel.twist.angular.z = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
   kesi_ = control.kesi;
-  RCLCPP_INFO(logger_,"index:%d v:%.2f kesi:%.2f vx:%.2f vyaw:%.2f K:%.2f",target_index,control.v,kesi_,cmd_vel.twist.linear.x,cmd_vel.twist.angular.z,k_list[target_index]);
+  // RCLCPP_INFO(logger_,"index:%d v:%.2f kesi:%.2f vx:%.2f vyaw:%.2f K:%.2f",target_index,control.v,kesi_,cmd_vel.twist.linear.x,cmd_vel.twist.angular.z,k_list[target_index]);
 
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){

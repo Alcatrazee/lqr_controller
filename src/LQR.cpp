@@ -141,14 +141,16 @@ U LQR::cal_vel() {
 		output.a = 0.0;
 		cerr << "nan U1" << endl;
 	}
+	
 	if(!isnan(U[0])){
 		output.kesi = U[0] + kesi_d;
 	}else{
 		output.kesi = kesi_d;
 		cerr << "nan U0" << endl;
 	}
+	output.kesi = clamp(output.kesi, -M_LOG2E, M_LOG2E);
 	// cout << U[0] << "," << U[1] << "," << kesi_d << endl;
-
+	// printf("%.4lf %.4lf %.4lf\r\n",U[0],kesi_d,output.kesi);
 	return output;
 }
  
