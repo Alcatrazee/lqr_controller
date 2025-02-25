@@ -130,6 +130,7 @@ void LqrController::configure(
   transform_tolerance_ = tf2::durationFromSec(0.5);
 
   encounter_obst_moment_logged_ = false;
+  lqr_controller_ = std::make_shared<LQR>();
 }
 
 void LqrController::cleanup()
@@ -428,14 +429,14 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     // goal constrain 
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
     double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
-    // sp.back() = max_v_distance; // set last point speed profile as dynamic
-
-    // RCLCPP_INFO(logger_, "%ldth (%lf,%lf)distance to goal(%lf,%lf): %f",i,wp[i].x,wp[i].y,
-    //   path_segment_[current_tracking_path_segment_].poses.back().pose.position.x,
-    //   path_segment_[current_tracking_path_segment_].poses.back().pose.position.y,distance_to_goal);
+    if(wp[i].x == global_plan_.poses.back().pose.position.x &&
+      wp[i].y == global_plan_.poses.back().pose.position.y &&
+      wp[i].yaw == get_yaw(global_plan_.poses.back()))
+    {
+      max_v_distance = 0;
+    }
 
     // obstacle constraint
-    
     double max_v_obst = fv_max;
     if(use_obstacle_stopping_ == true){
       if(distance_to_obst[i] < obst_stop_dist_ && distance_to_obst[i]>0){
@@ -522,7 +523,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   lqr_path_pub_->publish(local_plan);
 
   // declare LQR controller
-  lqr_controller_ = std::make_shared<LQR>();
+  
   
   // prepare lqr controller 
   std::vector<waypoint> wps;
@@ -553,7 +554,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   vector<double> k_list;
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,k_list,obstacle_distance_list,path_offset);
-  if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0){
+  if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     if(encounter_obst_moment_logged_ == false){
       encounter_obst_moment_logged_ = true;
@@ -602,7 +603,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
     // RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
-    if(dist_to_goal< min(pose_tolerance.position.x,pose_tolerance.position.y)/2){
+    if(dist_to_goal< min(pose_tolerance.position.x,pose_tolerance.position.y)){
       cmd_vel.twist.linear.x = 0;
       cmd_vel.twist.angular.z= 0;
       RCLCPP_INFO(logger_,"goal reached -- from controller plugin");
