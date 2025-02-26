@@ -128,6 +128,7 @@ void LqrController::configure(
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
+  max_steer_rate_ = 0.9;
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
@@ -139,7 +140,7 @@ void LqrController::cleanup()
     logger_,
     "Cleaning up controller: %s of type"
     " lqr_controller::LqrController",
-    plugin_name_.c_str());
+  plugin_name_.c_str());
   global_path_pub_.reset();
   lqr_path_pub_.reset();
   target_pub_.reset();
@@ -491,6 +492,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   geometry_msgs::msg::TwistStamped cmd_vel;
   static double last_control_time = rclcpp::Clock().now().seconds();
+  double now = rclcpp::Clock().now().seconds();
+  dt_ = now - last_control_time;
   // get robot coordinate in map frame, due to the argument pose is in odom frame
   geometry_msgs::msg::PoseStamped global_pose;
   transformPose(global_plan_.header.frame_id,pose,global_pose);
@@ -579,10 +582,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   U_r.v = sp[target_index];   // apply reference speed
   U_r.kesi = kesi*(sp[target_index]>=0?1:-1);
 
-  dt_ = rclcpp::Clock().now().seconds() - last_control_time;
-
-  last_control_time = rclcpp::Clock().now().seconds();
-
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
   // std::cout << "compute u" << std::endl;
@@ -590,15 +589,16 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // std::cout << "u completed" << std::endl;
   if(U_r.v==0)control.v = 0;
 
-  // std::cout << "u kesi: " << U_r.kesi << std::endl;
-  
-  // control.v = control.v*cos(control.kesi);
+  if(abs(control.kesi - kesi_)/dt_ > max_steer_rate_){
+    RCLCPP_WARN(logger_,"steer rate exceed limit, adjusting kesi, original %f steer rate %f  target %f",kesi_,abs(control.kesi - kesi_)/dt_,control.kesi);
+    control.kesi = kesi_ + max_steer_rate_* (control.kesi - kesi_)/abs(control.kesi - kesi_) * dt_;
+    RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
+  }
+
   cmd_vel.twist.linear.x = clamp(control.v,-max_bvx_,max_fvx_);
-  RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
+  // RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
   cmd_vel.twist.angular.z = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
   kesi_ = control.kesi;
-  // RCLCPP_INFO(logger_,"index:%d v:%.2f kesi:%.2f vx:%.2f vyaw:%.2f K:%.2f",target_index,control.v,kesi_,cmd_vel.twist.linear.x,cmd_vel.twist.angular.z,k_list[target_index]);
-
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
@@ -609,7 +609,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
       RCLCPP_INFO(logger_,"goal reached -- from controller plugin");
     }
   }
-  
+
+  last_control_time = now;
   // cmd_vel.twist.linear.x = 0;
   // cmd_vel.twist.angular.z= 0;
 

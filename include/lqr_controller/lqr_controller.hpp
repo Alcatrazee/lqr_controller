@@ -176,6 +176,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double Q_[5];
   double R_[2];
   int robot_search_pose_dist_;
+  double max_steer_rate_;
 
 
   nav_msgs::msg::Path global_plan_;
