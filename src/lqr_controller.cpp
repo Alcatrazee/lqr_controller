@@ -386,10 +386,10 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list,vector<double> &distance_to_obst,int path_offset){
+vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<vector<double>>& curvature_list,vector<double> &distance_to_obst,int path_offset){
   vector<double> sp(wp.size());
 
-  
+  cout << "size:" <<  curvature_list.size() << endl;
   for (size_t i = 0; i < wp.size(); i++)
   {
     // get next point on from or back
@@ -409,21 +409,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
       backward_motion = true;
     }
     // curvature constraint
-    double K = 0;
-    if(wp.size()>3){
-      if(i >= wp.size()-3){
-        K = 2*curvature_list[i-1] - curvature_list[i-2];
-        // RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
-      }else{
-        K = cal_K(wp, i);
-      }
-    }
-    // RCLCPP_INFO(logger_,"%ld  %f",i,K);
-
-    if(isnan(K)){
-      cerr << "K is nan, index: " << i << endl;
-    }
-    curvature_list.push_back(K);
+    double K = curvature_list[i][0];
     double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
     // goal constrain 
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
@@ -434,7 +420,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     {
       max_v_distance = 0;
     }
-
+    
     // obstacle constraint
     double max_v_obst = fv_max;
     if(use_obstacle_stopping_ == true){
@@ -456,6 +442,7 @@ vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_
     // RCLCPP_INFO(logger_, "speed profile:%ld %f %f %f",i, sp[i],K,distance_to_obst[i]);
   }
   // RCLCPP_INFO(logger_,"curvature list size:%ld sp list size %ld",curvature_list.size(),sp.size());
+  
   return sp;
 }
 
@@ -479,8 +466,52 @@ bool LqrController::transformPose(
   return false;
 }
 
-// TODO: must finish this function, this function is to receive global plan 
-// then compute velocity to actuate the base
+vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
+  vector<vector<double>> kappa_d_kappa; // [kappa ,d_kappa; ... ]
+  vector<double> kappa_list;
+  vector<double> kappa_rate_list;
+  // get kappa list
+  if(wp.size()>3){
+    for(size_t i=0;i<wp.size();i++){
+      // RCLCPP_INFO(logger_,"%ld %ld",i,wp.size());
+      double K;
+        if(i >= wp.size()-3){
+          K = 2*kappa_list[i-1] - kappa_list[i-2];
+          // RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
+        }else{
+          K = cal_K(wp, i);
+        }
+      kappa_list.push_back(K);
+    }
+    // get kappa rate
+    kappa_rate_list.push_back(0);
+    for(size_t i=1;i<wp.size();i++){
+      if(i == wp.size()-1){
+        kappa_rate_list.push_back(kappa_rate_list[i-1]*2 - kappa_rate_list[i-2]);
+      }else{
+        double ds = 0;
+        ds = hypot(wp[i-1].x - wp[i+1].x,wp[i-1].y - wp[i+1].y);
+        double dK = kappa_list[i];
+        dK = (kappa_list[i+1] - kappa_list[i-1])/(2*ds);
+
+        double dk_ds = 0;
+        if(ds!=0){
+          dk_ds = dK/ds;
+        }
+        kappa_rate_list.push_back(dk_ds);
+      }
+      // RCLCPP_INFO(logger_,"%ld %ld",i,wp.size());
+    }
+    // kappa_rate_list[0] = 
+
+    for(size_t i=0; i<wp.size(); i++){
+      kappa_d_kappa.push_back({kappa_list[i],kappa_rate_list[i]});
+    }
+
+  }// TODO: add kappa list when wp is less than 3
+  return kappa_d_kappa;
+}
+
 geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & speed,
@@ -552,9 +583,13 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   remove_duplicated_points(wps);
 
   // compute curvature and apply constraints to speed
-  vector<double> k_list;
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
-  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,k_list,obstacle_distance_list,path_offset);
+  vector<vector<double>> kappa_d_kappa_list = get_kappa_d_kappa(wps);
+  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
+  // for(size_t i=0;i<wps.size();i++) {
+  //   RCLCPP_INFO(logger_,"%ld  k2%f dk:%f",i,kappa_d_kappa_list[i][0],kappa_d_kappa_list[i][1]);
+  // }
+  
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     if(encounter_obst_moment_logged_ == false){
@@ -574,7 +609,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     encounter_obst_moment_logged_ = false;
   }
   // get curvature of tracking point
-  double K = k_list[target_index];
+  double K = kappa_d_kappa_list[target_index][0];
   double kesi = atan2(vehicle_L_ * K, 1);   // reference steer angle
 
   // reference input

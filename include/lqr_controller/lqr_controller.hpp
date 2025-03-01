@@ -100,7 +100,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     float v_min,
     float max_lateral_accel,
     vector<waypoint>& wp,
-    vector<double>& curvature_list,
+    vector<vector<double>>& curvature_list,
     vector<double>& distance_to_obst,
     int path_offset);
   
@@ -144,6 +144,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     geometry_msgs::msg::PoseStamped & out_pose) const;
 
   vector<int> find_cusp(const nav_msgs::msg::Path & path);
+  vector<vector<double>> get_kappa_d_kappa(vector<waypoint>& wp);
   /**
    * @brief crop path within costmap
    * @param 
