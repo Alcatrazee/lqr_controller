@@ -144,7 +144,7 @@ void LqrController::cleanup()
   global_path_pub_.reset();
   lqr_path_pub_.reset();
   target_pub_.reset();
-  target_arc_pub_.reset();
+  // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
 
@@ -182,7 +182,7 @@ void LqrController::deactivate()
   global_path_pub_->on_deactivate();
   lqr_path_pub_->on_deactivate();
   target_pub_->on_deactivate();
-  target_arc_pub_->on_deactivate();
+  // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
 }
@@ -225,6 +225,7 @@ vector<int> LqrController::find_cusp(const nav_msgs::msg::Path & path){
 
 void LqrController::setPlan(const nav_msgs::msg::Path & path)
 {
+  RCLCPP_INFO(logger_,"setting new plan");
   // get global path
   global_plan_ = path;
   // remove dulicated point so that we can use the path to find cusp index
@@ -386,28 +387,44 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState /*state*/,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<vector<double>>& curvature_list,vector<double> &distance_to_obst,int path_offset){
+vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<vector<double>>& curvature_list,vector<double> &distance_to_obst,int path_offset){
   vector<double> sp(wp.size());
 
-  cout << "size:" <<  curvature_list.size() << endl;
+  // cout << "size:" <<  curvature_list.size() << endl;
+  bool backward_motion = false;
+  // get next point on from or back
+    
+  Matrix4x4 T_map_pn,T_map_pnp1;
+  float next_dir = 0;
+  if(wp.size()>1){
+    T_map_pn << cos(wp[0].yaw), -sin(wp[0].yaw) ,0 , wp[0].x,
+              sin(wp[0].yaw), cos(wp[0].yaw), 0 , wp[0].y,
+              0, 0, 1, 0,
+              0, 0, 0, 1;
+    T_map_pnp1 << cos(wp[1].yaw), -sin(wp[1].yaw) ,0 , wp[1].x,
+              sin(wp[1].yaw), cos(wp[1].yaw), 0 , wp[1].y,
+              0, 0, 1, 0,
+              0, 0, 0, 1;
+  }else{
+    T_map_pn << cos(state.yaw), -sin(state.yaw) ,0 , state.x,
+                sin(state.yaw), cos(state.yaw), 0 , state.y,
+                0, 0, 1, 0,
+                0, 0, 0, 1;
+    T_map_pnp1 << cos(wp[0].yaw), -sin(wp[0].yaw) ,0 , wp[0].x,
+                  sin(wp[0].yaw), cos(wp[0].yaw), 0 , wp[0].y,
+                  0, 0, 1, 0,
+                  0, 0, 0, 1;
+  }
+  Matrix4x4 T_pn_pnp1 = T_map_pn.inverse() * T_map_pnp1;
+  next_dir = atan2(T_pn_pnp1(1,3), T_pn_pnp1(0,3));          
+  if(next_dir < -M_PI_2 || next_dir > M_PI_2){
+    backward_motion = true;
+  }
+
+  
   for (size_t i = 0; i < wp.size(); i++)
   {
-    // get next point on from or back
-    bool backward_motion = false;
-    Matrix4x4 T_map_pn,T_map_pnp1;
-    T_map_pn << cos(wp[i].yaw), -sin(wp[i].yaw) ,0 , wp[i].x,
-                sin(wp[i].yaw), cos(wp[i].yaw), 0 , wp[i].y,
-                0, 0, 1, 0,
-                0, 0, 0, 1;
-    T_map_pnp1 << cos(wp[i+1].yaw), -sin(wp[i+1].yaw) ,0 , wp[i+1].x,
-                sin(wp[i+1].yaw), cos(wp[i+1].yaw), 0 , wp[i+1].y,
-                0, 0, 1, 0,
-                0, 0, 0, 1;
-    Matrix4x4 T_pn_pnp1 = T_map_pn.inverse() * T_map_pnp1;
-    float next_dir = atan2(T_pn_pnp1(1,3), T_pn_pnp1(0,3));
-    if(next_dir < -M_PI_2 || next_dir > M_PI_2){
-      backward_motion = true;
-    }
+    
     // curvature constraint
     double K = curvature_list[i][0];
     double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
@@ -475,13 +492,15 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
     for(size_t i=0;i<wp.size();i++){
       // RCLCPP_INFO(logger_,"%ld %ld",i,wp.size());
       double K;
-        if(i >= wp.size()-3){
-          K = 2*kappa_list[i-1] - kappa_list[i-2];
-          // RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
-        }else{
-          K = cal_K(wp, i);
-        }
+        // if(i >= wp.size()-3){
+        //   K = 2*kappa_list[i-1] - kappa_list[i-2];
+        //   // RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
+        // }else{
+        //   K = cal_K(wp, i);
+        // }
+      K = cal_K(wp, i);
       kappa_list.push_back(K);
+      // RCLCPP_INFO(logger_,"%ldth K: %lf",i,K);
     }
     // get kappa rate
     kappa_rate_list.push_back(0);
@@ -508,7 +527,11 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
       kappa_d_kappa.push_back({kappa_list[i],kappa_rate_list[i]});
     }
 
-  }// TODO: add kappa list when wp is less than 3
+  }
+  else{  // TODO: add kappa list when wp is less than 3
+    for(size_t i=0;i<wp.size();i++)
+      kappa_d_kappa.push_back({0,0});
+  }
   return kappa_d_kappa;
 }
 
@@ -522,6 +545,10 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
 
   geometry_msgs::msg::TwistStamped cmd_vel;
+
+  // if(global_plan_.poses.size()==0){
+  //   throw nav2_core::PlannerException("path list is empty, please check planner."); 
+  // }
   static double last_control_time = rclcpp::Clock().now().seconds();
   double now = rclcpp::Clock().now().seconds();
   dt_ = now - last_control_time;
@@ -547,6 +574,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // 
   int path_offset = 0;
   nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose,path_offset);
+  // RCLCPP_INFO(logger_,"local plan size:%ld  cropped local path size: %ld",path_segment_[current_tracking_path_segment_].poses.size(),local_plan.poses.size());
   // if robot is not properly localized, use global plan instead
   if(local_plan.poses.size() == 0){
     RCLCPP_ERROR(logger_,"local plan empty, trying to find waypoint via global plan.");
@@ -563,6 +591,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // get target point to track and publish 
   int target_index = Find_target_index(global_pose,local_plan);
+  // RCLCPP_INFO(logger_,"target index %d",target_index);
   geometry_msgs::msg::PoseStamped target_pose;
   target_pose.header.stamp = rclcpp::Time();
   target_pose.header.frame_id = "map";
@@ -624,11 +653,11 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // std::cout << "u completed" << std::endl;
   if(U_r.v==0)control.v = 0;
 
-  if(abs(control.kesi - kesi_)/dt_ > max_steer_rate_){
-    RCLCPP_WARN(logger_,"steer rate exceed limit, adjusting kesi, original %f steer rate %f  target %f",kesi_,abs(control.kesi - kesi_)/dt_,control.kesi);
-    control.kesi = kesi_ + max_steer_rate_* (control.kesi - kesi_)/abs(control.kesi - kesi_) * dt_;
-    RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
-  }
+  // if(abs(control.kesi - kesi_)/dt_ > max_steer_rate_){
+  //   RCLCPP_WARN(logger_,"steer rate exceed limit, adjusting kesi, original %f steer rate %f  target %f",kesi_,abs(control.kesi - kesi_)/dt_,control.kesi);
+  //   control.kesi = kesi_ + max_steer_rate_* (control.kesi - kesi_)/abs(control.kesi - kesi_) * dt_;
+  //   RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
+  // }
 
   cmd_vel.twist.linear.x = clamp(control.v,-max_bvx_,max_fvx_);
   // RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
