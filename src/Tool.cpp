@@ -25,6 +25,6 @@ double cal_K(vector<waypoint> waypoints, int index){
 	}
 	//res.yaw = atan2(dy, dx);//yaw
 	//计算曲率：设曲线r(t) =(x(t),y(t)),则曲率k=(x'y" - x"y')/((x')^2 + (y')^2)^(3/2).
-	res = (ddy * dx - ddx * dy) / (sqrt(pow((pow(dx, 2) + pow(dy, 2)), 1.5)));
+	res = (ddy * dx - ddx * dy) / (sqrt(pow((pow(dx, 2) + pow(dy, 2)), 3)));
 	return res;
 }
