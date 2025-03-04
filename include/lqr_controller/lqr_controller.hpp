@@ -142,9 +142,32 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const std::string frame,
     const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
-
+  void optimizeSpeedsDP(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, const unordered_set<int>& fixed_indices);
+    int findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index);
+    vector<vector<int>> find_curve(vector<vector<double>>&K_list,double bound);
   vector<int> find_cusp(const nav_msgs::msg::Path & path);
   vector<vector<double>> get_kappa_d_kappa(vector<waypoint>& wp);
+
+  void forwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double deacc_max, int start_index);
+  void backwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, int start_index);
+  void optimizeCurveSpeeds(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, 
+    const vector<vector<int>>& curve_indices);
+
+  void optimizeCurveInternalSpeeds(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, 
+    const vector<vector<int>>& curve_indices, 
+    const vector<int>& fixed_points);
+  
+  void internalBackwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, int start_index, int end_index);
+  
+  void internalForwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double deacc_max, int start_index, int end_index);
+
   /**
    * @brief crop path within costmap
    * @param 
@@ -166,7 +189,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   bool encounter_obst_moment_logged_; // whether encounter obstacle moment is logged
   double obstacle_timeout_;
   double max_fvx_,max_bvx_,max_wz_;
-  double max_lin_acc_,max_lateral_accel_,max_w_acc_;
+  double max_lin_acc_,max_lateral_accel_,max_w_acc_,min_lin_deacc_;
   double dead_band_speed_;
   double approach_velocity_scaling_dist_,approach_v_gain_;
   bool use_obstacle_stopping_;

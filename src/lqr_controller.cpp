@@ -11,6 +11,7 @@
 #include <string>
 #include <iostream>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 #include <cmath>
 #include "lqr_controller/lqr_controller.hpp"
@@ -53,6 +54,8 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_linear_deaccel", rclcpp::ParameterValue(0.10));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_lateral_accel", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_w_accel", rclcpp::ParameterValue(0.4));
@@ -93,6 +96,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
   node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
+  node->get_parameter(plugin_name_ + ".min_linear_deaccel", min_lin_deacc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
@@ -245,7 +249,6 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   }
   current_tracking_path_segment_ = 0;
   encounter_obst_moment_logged_ = false;
-  // int cusp_num = 
 }
 
 double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
@@ -387,6 +390,171 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
+vector<vector<int>> LqrController::find_curve(vector<vector<double>>&K_list,double bound){
+  vector<vector<int>> result;
+    int n = K_list.size();
+    int start_index = -1; // 当前连续段的起始索引，-1表示未开始
+
+    for (int i = 0; i < n; ++i) {
+        if (abs(K_list[i][0]) > bound) {
+            // 如果当前元素符合条件且未开始记录，则标记起始索引
+            if (start_index == -1) {
+                start_index = i;
+            }
+        } else {
+            // 如果当前元素不符合条件但之前有连续段，则保存该段
+            if (start_index != -1) {
+                vector<int> segment;
+                for (int j = start_index; j < i; ++j) {
+                    segment.push_back(j);
+                }
+                result.push_back(segment);
+                start_index = -1;
+            }
+        }
+    }
+
+    // 处理末尾可能剩余的连续段
+    if (start_index != -1) {
+        vector<int> segment;
+        for (int j = start_index; j < n; ++j) {
+            segment.push_back(j);
+        }
+        result.push_back(segment);
+    }
+    return result;
+}
+
+// 内部优化的前向优化（从指定点向前）
+void LqrController::internalForwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+                             double deacc_max, int start_index, int end_index) {
+    for (int i = start_index - 1; i >= end_index; --i) {
+        double v_next = speeds[i + 1];
+        double distance = distances[i];
+        double v_max = sqrt(v_next * v_next + 2 * deacc_max * distance);
+        speeds[i] = min(speeds[i], v_max);
+
+        // 如果当前点与前一个点的加速度已经在范围内，则停止优化
+        if (i > end_index) {
+            double acc = (speeds[i] - speeds[i - 1]) / distances[i - 1];
+            if (abs(acc) <= deacc_max) {
+                break;
+            }
+        }
+    }
+}
+
+// 内部优化的后向优化（从指定点向后）
+void LqrController::internalBackwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+                              double acc_max, int start_index, int end_index) {
+    for (int i = start_index + 1; i <= end_index; ++i) {
+        double v_prev = speeds[i - 1];
+        double distance = distances[i - 1];
+        double v_max = sqrt(v_prev * v_prev + 2 * acc_max * distance);
+        speeds[i] = min(speeds[i], v_max);
+
+        // 如果当前点与后一个点的减速度已经在范围内，则停止优化
+        if (i < end_index) {
+            double deacc = (speeds[i] - speeds[i + 1]) / distances[i];
+            if (abs(deacc) <= acc_max) {
+                break;
+            }
+        }
+    }
+}
+
+// 优化弯道内部的速度
+void LqrController::optimizeCurveInternalSpeeds(vector<double>& speeds, const vector<double>& distances, 
+                                double acc_max, double deacc_max, 
+                                const vector<vector<int>>& curve_indices, 
+                                const vector<int>& fixed_points) {
+    for (size_t curve_idx = 0; curve_idx < curve_indices.size(); ++curve_idx) {
+        const auto& curve = curve_indices[curve_idx];
+        if (curve.empty()) continue;
+
+        // 获取当前弯道的固定点
+        int fixed_index = fixed_points[curve_idx];
+        int curve_start = curve.front();  // 弯道起点
+        int curve_end = curve.back();    // 弯道终点
+
+        // 从固定点向前优化到弯道起点
+        internalForwardOptimize(speeds, distances, deacc_max, fixed_index, curve_start);
+
+        // 从固定点向后优化到弯道终点
+        internalBackwardOptimize(speeds, distances, acc_max, fixed_index, curve_end);
+    }
+}
+
+// 前向优化（从指定点向前）
+void LqrController::forwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+                     double deacc_max, int start_index) {
+    for (int i = start_index - 1; i >= 0; --i) {
+        double v_next = speeds[i + 1];
+        double distance = distances[i];
+        double v_max = sqrt(v_next * v_next + 2 * deacc_max * distance);
+        speeds[i] = min(speeds[i], v_max);
+
+        // 如果当前点与前一个点的加速度已经在范围内，则停止优化
+        if (i > 0) {
+            double acc = (speeds[i] - speeds[i - 1]) / distances[i - 1];
+            if (abs(acc) <= deacc_max) {
+                break;
+            }
+        }
+    }
+}
+
+// 后向优化（从指定点向后）
+void LqrController::backwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+                      double acc_max, int start_index) {
+    for (size_t i = start_index + 1; i < speeds.size(); ++i) {
+        double v_prev = speeds[i - 1];
+        double distance = distances[i - 1];
+        double v_max = sqrt(v_prev * v_prev + 2 * acc_max * distance);
+        speeds[i] = min(speeds[i], v_max);
+
+        // 如果当前点与后一个点的减速度已经在范围内，则停止优化
+        if (i < speeds.size() - 1) {
+            double deacc = (speeds[i] - speeds[i + 1]) / distances[i];
+            if (abs(deacc) <= acc_max) {
+                break;
+            }
+        }
+    }
+}
+
+// 优化速度列表
+void LqrController::optimizeCurveSpeeds(vector<double>& speeds, const vector<double>& distances, 
+                         double acc_max, double deacc_max, 
+                         const vector<vector<int>>& curve_indices) {
+    for (const auto& curve : curve_indices) {
+        if (curve.empty()) continue;
+
+        // 对弯道的第一个点进行前向优化
+        int first_index = curve.front();
+        forwardOptimize(speeds, distances, deacc_max, first_index);
+
+        // 对弯道的最后一个点进行后向优化
+        int last_index = curve.back();
+        backwardOptimize(speeds, distances, acc_max, last_index);
+    }
+}
+
+int LqrController::findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index) {
+  double minAbsValue = std::numeric_limits<double>::max();
+  int minIndex = -1;
+
+  for (int index : curve_index) {
+      double absValue = std::abs(max_v_curvature_list[index]);
+      if (absValue < minAbsValue) {
+          minAbsValue = absValue;
+          minIndex = index;
+      }
+  }
+
+  return minIndex;
+}
+
 vector<double> LqrController::get_speed_profile(vehicleState state,
                           float fv_max,
                           float bv_max,
@@ -449,8 +617,34 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
     }
 
     // apply constraints
-    max_v_curvature_list[i] = max_v_curvature;
-    max_v_goal_list[i] = max_v_distance;
+    max_v_curvature_list[i] = clamp(max_v_curvature,-max_bvx_,max_fvx_);
+    max_v_goal_list[i] = clamp(max_v_distance,-max_bvx_,max_fvx_);
+  }
+
+  vector<int> index_set;
+  vector<vector<int>> curve_index_list = find_curve(curvature_list,0.1);
+  if(curve_index_list.size() != 0){
+    cout << "there are " << curve_index_list.size() << " curves found" << endl;
+    for(auto curve_index:curve_index_list){
+      index_set.push_back(findMinAbsIndex(max_v_curvature_list,curve_index));
+    }
+    for(auto index:index_set)
+      cout << index << " ";
+    cout << endl;
+    vector<double> distance_list;
+    for(size_t i=1;i<wp.size();i++){
+      distance_list.push_back(hypot(wp[i].x-wp[i-1].x,wp[i].y-wp[i-1].y));
+    }
+    vector<double> max_v_curvature_list_copy = max_v_curvature_list;
+    
+    if(index_set.size() != 0){
+      optimizeCurveInternalSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list,index_set);
+      optimizeCurveSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list);
+    }
+    for(size_t i=0;i<max_v_curvature_list.size();i++){
+      cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
+    }
+    cout << endl;
   }
 
   // get obstacle affected speed list
@@ -769,6 +963,13 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           max_lin_acc_ = std::abs(parameter.as_double());
         }else{
           max_lin_acc_ = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + "min_linear_deaccel"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          min_lin_deacc_ = std::abs(parameter.as_double());
+        }else{
+          min_lin_deacc_ = parameter.as_double();
         }
       }else if(name == plugin_name_ + "max_lateral_accel"){
         if(parameter.as_double() < 0){
