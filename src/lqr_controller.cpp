@@ -387,10 +387,19 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   }
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,float /*bv_max*/,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<vector<double>>& curvature_list,vector<double> &distance_to_obst,int path_offset){
+vector<double> LqrController::get_speed_profile(vehicleState state,
+                          float fv_max,
+                          float bv_max,
+                          float v_min,
+                          float max_lateral_accel,
+                          vector<waypoint>& wp,
+                          vector<vector<double>>& curvature_list,
+                          vector<double> &distance_to_obst,
+                          int path_offset){
   vector<double> sp(wp.size());
   vector<double> max_v_curvature_list(wp.size());
   vector<double> max_v_goal_list(wp.size());
+  vector<double> max_v_obstacle_list(wp.size());
   // cout << "size:" <<  curvature_list.size() << endl;
   bool backward_motion = false;
   // get next point on from or back
@@ -428,9 +437,8 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
     // curvature constraint
     double K = curvature_list[i][0];
     double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
+    
     // goal constrain 
-    
-    
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
     double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
     if(wp[i].x == global_plan_.poses.back().pose.position.x &&
@@ -439,10 +447,13 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
     {
       max_v_distance = 0;
     }
+
+    // apply constraints
     max_v_curvature_list[i] = max_v_curvature;
     max_v_goal_list[i] = max_v_distance;
   }
 
+  // get obstacle affected speed list
   for (size_t i = 0; i < wp.size(); i++){
     // obstacle constraint
     double max_v_obst = fv_max;
@@ -453,19 +464,18 @@ vector<double> LqrController::get_speed_profile(vehicleState state,float fv_max,
         max_v_obst = obst_speed_control_k_*distance_to_obst[i]+obst_speed_control_b_;
       }
     }
-    
-    // RCLCPP_INFO(logger_, "distance to obst: %ld %f speed:%f",i,distance_to_obst[i],max_v_obst);
-
-    // get speed
-    if(!backward_motion){
-      sp[i] = std::min({(double)fv_max,max_v_curvature,max_v_distance,max_v_obst});   // forward motion profile
-    }else{
-      sp[i] = -std::min({(double)fv_max,max_v_curvature,max_v_distance,max_v_obst}); // backward motion profile
-    }
-    // RCLCPP_INFO(logger_, "speed profile:%ld %f %f %f",i, sp[i],K,distance_to_obst[i]);
+    max_v_obstacle_list[i] = max_v_obst;
   }
-  // RCLCPP_INFO(logger_,"curvature list size:%ld sp list size %ld",curvature_list.size(),sp.size());
-  
+
+  // get speed profile
+  for (size_t i = 0; i < wp.size(); i++){
+    if(!backward_motion){
+      sp[i] = std::min({(double)fv_max,max_v_curvature_list[i],max_v_goal_list[i],max_v_obstacle_list[i]});   // forward motion profile
+    }else{
+      sp[i] = -std::min({(double)bv_max,max_v_curvature_list[i],max_v_goal_list[i],max_v_obstacle_list[i]}); // backward motion profile
+    }
+  }
+
   return sp;
 }
 
