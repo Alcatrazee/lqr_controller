@@ -168,7 +168,12 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   void internalForwardOptimize(vector<double>& speeds, const vector<double>& distances, 
     double deacc_max, int start_index, int end_index);
 
-  /**
+
+    double lerp(double a, double b, double t);
+    double angle_lerp(double a, double b, double t);
+    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
+    std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
+    /**
    * @brief crop path within costmap
    * @param 
    */

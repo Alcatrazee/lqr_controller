@@ -227,6 +227,85 @@ vector<int> LqrController::find_cusp(const nav_msgs::msg::Path & path){
   return cusp_indexs;
 }
 
+// 线性插值函数
+double LqrController::lerp(double a, double b, double t) {
+  return a + t * (b - a);
+}
+
+// 角度插值函数（考虑周期性）
+double LqrController::angle_lerp(double a, double b, double t) {
+  double delta = fmod(b - a + M_PI, 2 * M_PI) - M_PI;
+  return a + t * delta;
+}
+
+// 从四元数提取 yaw 角（theta）TODO: reuse get_yaw()
+double LqrController::get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) {
+  tf2::Quaternion tf_quat;
+  tf2::fromMsg(quat, tf_quat);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(tf_quat).getRPY(roll, pitch, yaw);
+  return yaw;
+}
+
+// 重新采样路径
+std::vector<geometry_msgs::msg::PoseStamped> LqrController::resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples) {
+  std::vector<geometry_msgs::msg::PoseStamped> resampled_poses;
+  if (poses.empty()) {
+      return resampled_poses;
+  }
+
+  // Step 1: 计算累积弧长
+  std::vector<double> lengths;
+  lengths.push_back(0);
+  for (size_t i = 1; i < poses.size(); ++i) {
+      double dx = poses[i].pose.position.x - poses[i - 1].pose.position.x;
+      double dy = poses[i].pose.position.y - poses[i - 1].pose.position.y;
+      double segment_length = std::hypot(dx, dy);
+      lengths.push_back(lengths.back() + segment_length);
+  }
+
+  double total_length = lengths.back();
+
+  // Step 2: 均匀采样
+  double step_length = total_length / (num_samples - 1);
+
+  for (size_t i = 0; i < num_samples; ++i) {
+      double target_length = i * step_length;
+
+      // 找到目标弧长所在的段
+      size_t index = 0;
+      while (index < lengths.size() - 1 && lengths[index + 1] < target_length) {
+          index++;
+      }
+
+      // 插值生成新点
+      double t = (target_length - lengths[index]) / (lengths[index + 1] - lengths[index]);
+      double x = lerp(poses[index].pose.position.x, poses[index + 1].pose.position.x, t);
+      double y = lerp(poses[index].pose.position.y, poses[index + 1].pose.position.y, t);
+      double theta = angle_lerp(
+          get_yaw_from_quaternion(poses[index].pose.orientation),
+          get_yaw_from_quaternion(poses[index + 1].pose.orientation),
+          t
+      );
+
+      // 创建新的 PoseStamped
+      geometry_msgs::msg::PoseStamped pose_stamped;
+      pose_stamped.header = poses[index].header; // 保留原始 header
+      pose_stamped.pose.position.x = x;
+      pose_stamped.pose.position.y = y;
+      pose_stamped.pose.position.z = 0.0; // 假设 2D 路径
+
+      // 将 theta 转换为四元数
+      tf2::Quaternion quat;
+      quat.setRPY(0, 0, theta); // 设置 roll=0, pitch=0, yaw=theta
+      pose_stamped.pose.orientation = tf2::toMsg(quat);
+
+      resampled_poses.push_back(pose_stamped);
+  }
+
+  return resampled_poses;
+}
+
 void LqrController::setPlan(const nav_msgs::msg::Path & path)
 {
   RCLCPP_INFO(logger_,"setting new plan");
@@ -239,10 +318,11 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   // cut segament based on cusp index
   path_segment_.clear();
   for(size_t i=0;i<cusp_index_.size()-1;i++){
-    nav_msgs::msg::Path path_segment;
+    nav_msgs::msg::Path path_segment,unsmoothed_path;
     for(int j=cusp_index_[i];j<=cusp_index_[i+1];j++){
-      path_segment.poses.push_back(global_plan_.poses[j]);
+      unsmoothed_path.poses.push_back(global_plan_.poses[j]);
     }
+    path_segment.poses = resample_path(unsmoothed_path.poses, unsmoothed_path.poses.size());
     path_segment.header.frame_id = global_plan_.header.frame_id;
     path_segment.header.stamp = clock_->now();
     path_segment_.push_back(path_segment);
@@ -434,13 +514,13 @@ void LqrController::internalForwardOptimize(vector<double>& speeds, const vector
         double v_max = sqrt(v_next * v_next + 2 * deacc_max * distance);
         speeds[i] = min(speeds[i], v_max);
 
-        // 如果当前点与前一个点的加速度已经在范围内，则停止优化
-        if (i > end_index) {
-            double acc = (speeds[i] - speeds[i - 1]) / distances[i - 1];
-            if (abs(acc) <= deacc_max) {
-                break;
-            }
-        }
+        // // 如果当前点与前一个点的加速度已经在范围内，则停止优化
+        // if (i > end_index) {
+        //     double acc = (speeds[i] - speeds[i - 1]) / distances[i - 1];
+        //     if (abs(acc) <= deacc_max) {
+        //         break;
+        //     }
+        // }
     }
 }
 
@@ -453,13 +533,13 @@ void LqrController::internalBackwardOptimize(vector<double>& speeds, const vecto
         double v_max = sqrt(v_prev * v_prev + 2 * acc_max * distance);
         speeds[i] = min(speeds[i], v_max);
 
-        // 如果当前点与后一个点的减速度已经在范围内，则停止优化
-        if (i < end_index) {
-            double deacc = (speeds[i] - speeds[i + 1]) / distances[i];
-            if (abs(deacc) <= acc_max) {
-                break;
-            }
-        }
+        // // 如果当前点与后一个点的减速度已经在范围内，则停止优化
+        // if (i < end_index) {
+        //     double deacc = (speeds[i] - speeds[i + 1]) / distances[i];
+        //     if (abs(deacc) <= acc_max) {
+        //         break;
+        //     }
+        // }
     }
 }
 
@@ -626,6 +706,7 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
   if(curve_index_list.size() != 0){
     cout << "there are " << curve_index_list.size() << " curves found" << endl;
     for(auto curve_index:curve_index_list){
+      cout << "curve begin at " << curve_index.front() << " end at " << curve_index.back()  << endl;
       index_set.push_back(findMinAbsIndex(max_v_curvature_list,curve_index));
     }
     for(auto index:index_set)
