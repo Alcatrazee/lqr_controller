@@ -1,5 +1,5 @@
-1. add cusp identification
-2. add obstacle detection
-3. parameterization and dynamic parameterization
-4. add forward path computation
+1. add cusp identification                          done
+2. add obstacle detection                           done
+3. parameterization and dynamic parameterization    done
+4. add forward path computation                     
 5. remove usless code

@@ -22,6 +22,8 @@
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/path.hpp>
 #include <lqr_controller/LQR.hpp>
+#include <vector>
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 
 namespace lqr_controller
 {
@@ -149,6 +151,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   vector<int> find_cusp(const nav_msgs::msg::Path & path);
   vector<vector<double>> get_kappa_d_kappa(vector<waypoint>& wp);
 
+  void publish_collision_polygon(const geometry_msgs::msg::PoseStamped& pose);
   void forwardOptimize(vector<double>& speeds, const vector<double>& distances, 
     double deacc_max, int start_index);
   void backwardOptimize(vector<double>& speeds, const vector<double>& distances, 
@@ -167,7 +170,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   
   void internalForwardOptimize(vector<double>& speeds, const vector<double>& distances, 
     double deacc_max, int start_index, int end_index);
-
+  
 
     double lerp(double a, double b, double t);
     double angle_lerp(double a, double b, double t);
@@ -214,6 +217,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>  target_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
 

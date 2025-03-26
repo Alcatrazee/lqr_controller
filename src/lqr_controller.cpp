@@ -20,6 +20,7 @@
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 #include "lqr_controller/Tool.h"
 #include <algorithm>
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 
 using nav2_util::declare_parameter_if_not_declared;
 using nav2_util::geometry_utils::euclidean_distance;
@@ -127,6 +128,7 @@ void LqrController::configure(
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
+  collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -148,6 +150,7 @@ void LqrController::cleanup()
   global_path_pub_.reset();
   lqr_path_pub_.reset();
   target_pub_.reset();
+  collision_polygon_pub_.reset();
   // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
@@ -162,6 +165,7 @@ void LqrController::activate()
   global_path_pub_->on_activate();
   lqr_path_pub_->on_activate();
   target_pub_->on_activate();
+  collision_polygon_pub_->on_activate();
   cusp_pub_->on_activate();
   // Remove these lines if publishers aren't needed
   
@@ -186,6 +190,7 @@ void LqrController::deactivate()
   global_path_pub_->on_deactivate();
   lqr_path_pub_->on_deactivate();
   target_pub_->on_deactivate();
+  collision_polygon_pub_->on_deactivate();
   // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
@@ -440,6 +445,7 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
       RCLCPP_WARN(logger_, "Footprint cost is unknown, collision check failed");
     }else if(footprint_cost > static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)){
       obst_index = i;
+      publish_collision_polygon(path.poses[i]);
       // RCLCPP_INFO(logger_, "found obstacle in pose (%f,%f) ",obst_free_path.poses.back().pose.position.x, obst_free_path.poses.back().pose.position.y);
       break;
     }
@@ -635,6 +641,29 @@ int LqrController::findMinAbsIndex(const std::vector<double>& max_v_curvature_li
   return minIndex;
 }
 
+void LqrController::publish_collision_polygon(const geometry_msgs::msg::PoseStamped& pose){
+  Matrix4x4 T_map_collision_pose;
+  double yaw = get_yaw_from_quaternion(pose.pose.orientation);
+  T_map_collision_pose << cos(yaw),-sin(yaw),0,pose.pose.position.x,
+                         sin(yaw),cos(yaw),0,pose.pose.position.y,
+                         0,0,1,0,
+                         0,0,0,1;
+  auto polygon = costmap_ros_->getRobotFootprintPolygon();
+  geometry_msgs::msg::PolygonStamped collision_polygon;
+  for(auto polygon_point : polygon.points){
+    Eigen::Vector4d point;
+    point << polygon_point.x, polygon_point.y, 0, 1;
+    auto transformed_point = T_map_collision_pose * point;
+    geometry_msgs::msg::Point32 transformed_point_msg;
+    transformed_point_msg.x = transformed_point(0);
+    transformed_point_msg.y = transformed_point(1);
+    collision_polygon.polygon.points.push_back(transformed_point_msg);
+  }
+  collision_polygon.header.frame_id = pose.header.frame_id;
+  collision_polygon.header.stamp = rclcpp::Time();
+  collision_polygon_pub_->publish(collision_polygon);
+}
+
 vector<double> LqrController::get_speed_profile(vehicleState state,
                           float fv_max,
                           float bv_max,
@@ -704,14 +733,14 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
   vector<int> index_set;
   vector<vector<int>> curve_index_list = find_curve(curvature_list,0.1);
   if(curve_index_list.size() != 0){
-    cout << "there are " << curve_index_list.size() << " curves found" << endl;
+    // cout << "there are " << curve_index_list.size() << " curves found" << endl;
     for(auto curve_index:curve_index_list){
-      cout << "curve begin at " << curve_index.front() << " end at " << curve_index.back()  << endl;
+      // cout << "curve begin at " << curve_index.front() << " end at " << curve_index.back()  << endl;
       index_set.push_back(findMinAbsIndex(max_v_curvature_list,curve_index));
     }
-    for(auto index:index_set)
-      cout << index << " ";
-    cout << endl;
+    // for(auto index:index_set)
+    //   cout << index << " ";
+    // cout << endl;
     vector<double> distance_list;
     for(size_t i=1;i<wp.size();i++){
       distance_list.push_back(hypot(wp[i].x-wp[i-1].x,wp[i].y-wp[i-1].y));
@@ -781,17 +810,9 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
   // get kappa list
   if(wp.size()>3){
     for(size_t i=0;i<wp.size();i++){
-      // RCLCPP_INFO(logger_,"%ld %ld",i,wp.size());
       double K;
-        // if(i >= wp.size()-3){
-        //   K = 2*kappa_list[i-1] - kappa_list[i-2];
-        //   // RCLCPP_INFO(logger_,"last curvature is %f %f %f",K,curvature_list[i-1],curvature_list[i-2]);
-        // }else{
-        //   K = cal_K(wp, i);
-        // }
       K = cal_K(wp, i);
       kappa_list.push_back(K);
-      // RCLCPP_INFO(logger_,"%ldth K: %lf",i,K);
     }
     // get kappa rate
     kappa_rate_list.push_back(0);
@@ -888,7 +909,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   target_pose.header.frame_id = "map";
   target_pose.pose = local_plan.poses[target_index].pose;
   target_pub_->publish(target_pose);
-
   // get waypoints list
   for(size_t i=0;i<local_plan.poses.size();i++){
     waypoint wp;
