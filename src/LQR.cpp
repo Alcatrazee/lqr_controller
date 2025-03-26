@@ -7,7 +7,7 @@
  
 using namespace std;
  
-void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U_r, double *Q_, double *R_) {
+void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U_r, double *Q_arr, double *R_arr) {
  
 	L = L_;
 	T = T_;
@@ -16,10 +16,10 @@ void LQR::initial(double L_, double T_, vehicleState car, waypoint waypoint, U U
 	v_d = U_r.v;kesi_d = U_r.kesi;
  
 	for (int i = 0; i < 5; i++) {
-		Q5[i] = Q_[i];
+		Q5[i] = Q_arr[i];
 	}
 	for (int j = 0; j < 2; j++) {
-		R2[j] = R_[j];
+		R2[j] = R_arr[j];
 	}
 }
  
@@ -141,14 +141,16 @@ U LQR::cal_vel() {
 		output.a = 0.0;
 		cerr << "nan U1" << endl;
 	}
+	
 	if(!isnan(U[0])){
 		output.kesi = U[0] + kesi_d;
 	}else{
 		output.kesi = kesi_d;
 		cerr << "nan U0" << endl;
 	}
+	output.kesi = clamp(output.kesi, -M_LOG2E, M_LOG2E);
 	// cout << U[0] << "," << U[1] << "," << kesi_d << endl;
-
+	// printf("%.4lf %.4lf %.4lf\r\n",U[0],kesi_d,output.kesi);
 	return output;
 }
  

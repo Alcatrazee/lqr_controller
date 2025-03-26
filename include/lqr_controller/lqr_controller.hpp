@@ -22,6 +22,8 @@
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/path.hpp>
 #include <lqr_controller/LQR.hpp>
+#include <vector>
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 
 namespace lqr_controller
 {
@@ -94,7 +96,17 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const geometry_msgs::msg::Twist & /*speed */,
     nav2_core::GoalChecker * /*goal_checker*/) override;
 
-  vector<double> get_speed_profile(vehicleState state,float fv_max,float bv_max,float v_min,float max_lateral_accel,vector<waypoint>& wp,vector<double>& curvature_list);
+  vector<double> get_speed_profile(vehicleState state,
+    float fv_max,
+    float bv_max,
+    float v_min,
+    float max_lateral_accel,
+    vector<waypoint>& wp,
+    vector<vector<double>>& curvature_list,
+    vector<double>& distance_to_obst,
+    int path_offset);
+  
+  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
 
   /**
    * @brief nav2_core setPlan - Sets the global plan
@@ -102,7 +114,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    */
     void setPlan(const nav_msgs::msg::Path & path) override;
 
-  nav_msgs::msg::Path grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose);
+  nav_msgs::msg::Path grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset);
   void remove_duplicated_points(vector<waypoint>& points);
   int Find_target_index(const geometry_msgs::msg::PoseStamped & state, nav_msgs::msg::Path &local_path);
   /**
@@ -132,9 +144,39 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const std::string frame,
     const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
-
+  void optimizeSpeedsDP(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, const unordered_set<int>& fixed_indices);
+    int findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index);
+    vector<vector<int>> find_curve(vector<vector<double>>&K_list,double bound);
   vector<int> find_cusp(const nav_msgs::msg::Path & path);
-  /**
+  vector<vector<double>> get_kappa_d_kappa(vector<waypoint>& wp);
+
+  void publish_collision_polygon(const geometry_msgs::msg::PoseStamped& pose);
+  void forwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double deacc_max, int start_index);
+  void backwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, int start_index);
+  void optimizeCurveSpeeds(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, 
+    const vector<vector<int>>& curve_indices);
+
+  void optimizeCurveInternalSpeeds(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, double deacc_max, 
+    const vector<vector<int>>& curve_indices, 
+    const vector<int>& fixed_points);
+  
+  void internalBackwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double acc_max, int start_index, int end_index);
+  
+  void internalForwardOptimize(vector<double>& speeds, const vector<double>& distances, 
+    double deacc_max, int start_index, int end_index);
+  
+
+    double lerp(double a, double b, double t);
+    double angle_lerp(double a, double b, double t);
+    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
+    std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
+    /**
    * @brief crop path within costmap
    * @param 
    */
@@ -151,6 +193,23 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   int current_tracking_path_segment_ = 0;
   vector<int> cusp_index_;
   vector<nav_msgs::msg::Path> path_segment_;
+  double encounter_obst_moment_; // moment of stopping due to obstacle
+  bool encounter_obst_moment_logged_; // whether encounter obstacle moment is logged
+  double obstacle_timeout_;
+  double max_fvx_,max_bvx_,max_wz_;
+  double max_lin_acc_,max_lateral_accel_,max_w_acc_,min_lin_deacc_;
+  double dead_band_speed_;
+  double approach_velocity_scaling_dist_,approach_v_gain_;
+  bool use_obstacle_stopping_;
+  double obst_speed_control_k_,obst_speed_control_b_;
+  double obst_stop_dist_,obst_slow_dist_;
+  double vehicle_L_;
+  double inversion_xy_tolerance_;
+  double Q_[5];
+  double R_[2];
+  int robot_search_pose_dist_;
+  double max_steer_rate_;
+
 
   nav_msgs::msg::Path global_plan_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
@@ -158,6 +217,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>  target_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
 
