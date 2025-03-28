@@ -239,7 +239,7 @@ double LqrController::lerp(double a, double b, double t) {
 
 // 角度插值函数（考虑周期性）
 double LqrController::angle_lerp(double a, double b, double t) {
-  double delta = fmod(b - a + M_PI, 2 * M_PI) - M_PI;
+  double delta = atan2(sin(b - a), cos(b - a)); // 计算最短角度差
   return a + t * delta;
 }
 
@@ -292,7 +292,9 @@ std::vector<geometry_msgs::msg::PoseStamped> LqrController::resample_path(const 
           get_yaw_from_quaternion(poses[index + 1].pose.orientation),
           t
       );
-
+      // RCLCPP_INFO(logger_, "yaw i: %f, yaw i+1: %f, t: %f theta:%f", get_yaw_from_quaternion(poses[index].pose.orientation),
+      //                                                     get_yaw_from_quaternion(poses[index + 1].pose.orientation),
+      //                                                     t,theta);
       // 创建新的 PoseStamped
       geometry_msgs::msg::PoseStamped pose_stamped;
       pose_stamped.header = poses[index].header; // 保留原始 header
@@ -751,10 +753,10 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
       optimizeCurveInternalSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list,index_set);
       optimizeCurveSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list);
     }
-    for(size_t i=0;i<max_v_curvature_list.size();i++){
-      cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
-    }
-    cout << endl;
+    // for(size_t i=0;i<max_v_curvature_list.size();i++){
+    //   cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
+    // }
+    // cout << endl;
   }
 
   // get obstacle affected speed list
