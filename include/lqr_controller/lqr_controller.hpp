@@ -1,6 +1,7 @@
 #ifndef LQR_CONTROLLER_HPP
 #define LQR_CONTROLLER_HPP
 
+#include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
 #include <vector>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <lqr_controller/LQR.hpp>
 #include <vector>
 #include <geometry_msgs/msg/polygon_stamped.hpp>
+#include <std_msgs/msg/u_int64_multi_array.hpp>
 
 namespace lqr_controller
 {
@@ -218,6 +220,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::UInt64MultiArray>> error_code_pub_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
 

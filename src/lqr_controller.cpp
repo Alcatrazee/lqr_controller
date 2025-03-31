@@ -8,6 +8,7 @@
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/time.hpp>
+#include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
 #include <iostream>
 #include <memory>
@@ -129,6 +130,7 @@ void LqrController::configure(
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
+  error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -151,6 +153,7 @@ void LqrController::cleanup()
   lqr_path_pub_.reset();
   target_pub_.reset();
   collision_polygon_pub_.reset();
+  error_code_pub_.reset();
   // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
@@ -166,6 +169,7 @@ void LqrController::activate()
   lqr_path_pub_->on_activate();
   target_pub_->on_activate();
   collision_polygon_pub_->on_activate();
+  error_code_pub_->on_activate();
   cusp_pub_->on_activate();
   // Remove these lines if publishers aren't needed
   
@@ -191,6 +195,7 @@ void LqrController::deactivate()
   lqr_path_pub_->on_deactivate();
   target_pub_->on_deactivate();
   collision_polygon_pub_->on_deactivate();
+  error_code_pub_->on_deactivate();
   // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
@@ -857,6 +862,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  std_msgs::msg::UInt64MultiArray ErrCode;
 
   geometry_msgs::msg::TwistStamped cmd_vel;
 
@@ -934,6 +940,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+    ErrCode.data.push_back(100006);
     if(encounter_obst_moment_logged_ == false){
       encounter_obst_moment_logged_ = true;
       encounter_obst_moment_ = clock_->now().seconds();
@@ -946,6 +953,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     }
   }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
     RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
+    ErrCode.data.push_back(100005);
     encounter_obst_moment_logged_ = false;
   }else{
     encounter_obst_moment_logged_ = false;
@@ -990,7 +998,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   last_control_time = now;
   // cmd_vel.twist.linear.x = 0;
   // cmd_vel.twist.angular.z= 0;
-
+  error_code_pub_->publish(ErrCode);
   return cmd_vel;
 }
 
