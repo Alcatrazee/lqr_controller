@@ -1,6 +1,7 @@
 #ifndef LQR_CONTROLLER_HPP
 #define LQR_CONTROLLER_HPP
 
+#include <geometry_msgs/msg/detail/twist__struct.hpp>
 #include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
 #include <vector>
@@ -202,7 +203,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double max_lin_acc_,max_lateral_accel_,max_w_acc_,min_lin_deacc_;
   double dead_band_speed_;
   double approach_velocity_scaling_dist_,approach_v_gain_;
-  bool use_obstacle_stopping_;
+  bool use_obstacle_stopping_,use_output_filter_;
   double obst_speed_control_k_,obst_speed_control_b_;
   double obst_stop_dist_,obst_slow_dist_;
   double vehicle_L_;
@@ -211,6 +212,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double R_[2];
   int robot_search_pose_dist_;
   double max_steer_rate_;
+  geometry_msgs::msg::Twist last_cmd_vel_;
 
 
   nav_msgs::msg::Path global_plan_;

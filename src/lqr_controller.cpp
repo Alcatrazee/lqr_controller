@@ -66,6 +66,8 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_output_filter", rclcpp::ParameterValue(false));  
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
@@ -104,6 +106,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
+  node->get_parameter(plugin_name_ + ".use_output_filter", use_output_filter_);
   node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
   node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
   node->get_parameter(plugin_name_ + ".path_obst_slow_dist", obst_slow_dist_);
@@ -980,10 +983,27 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   //   RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
   // }
 
-  cmd_vel.twist.linear.x = clamp(control.v,-max_bvx_,max_fvx_);
-  // RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
-  cmd_vel.twist.angular.z = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
+  double vx = clamp(control.v,-max_bvx_,max_fvx_);
+  double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
+
+  if(use_output_filter_ == true){
+    cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
+    cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
+    RCLCPP_INFO(logger_,"filter on");
+  }else{
+    cmd_vel.twist.linear.x = vx;
+    cmd_vel.twist.angular.z = az;
+    RCLCPP_INFO(logger_,"filter off");
+  }
+  
   kesi_ = control.kesi;
+
+  RCLCPP_INFO(logger_,"az%lf cmdaz:%lf",az,cmd_vel.twist.angular.z);
+
+  last_cmd_vel_.angular.z = az;
+  last_cmd_vel_.linear.x = vx;
+
+  
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
@@ -1068,126 +1088,126 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_wz_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_linear_accel"){
+      }else if(name == plugin_name_ + ".max_linear_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_lin_acc_ = std::abs(parameter.as_double());
         }else{
           max_lin_acc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "min_linear_deaccel"){
+      }else if(name == plugin_name_ + ".min_linear_deaccel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           min_lin_deacc_ = std::abs(parameter.as_double());
         }else{
           min_lin_deacc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_lateral_accel"){
+      }else if(name == plugin_name_ + ".max_lateral_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_lateral_accel_ = std::abs(parameter.as_double());
         }else{
           max_lateral_accel_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_w_accel"){
+      }else if(name == plugin_name_ + ".max_w_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_w_acc_ = std::abs(parameter.as_double());
         }else{
           max_w_acc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "dead_band_speed"){
+      }else if(name == plugin_name_ + ".dead_band_speed"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           dead_band_speed_ = std::abs(parameter.as_double());
         }else{
           dead_band_speed_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "approach_velocity_scaling_dist"){
+      }else if(name == plugin_name_ + ".approach_velocity_scaling_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           approach_velocity_scaling_dist_ = std::abs(parameter.as_double());
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "patient_encounter_obst"){
+      }else if(name == plugin_name_ + ".patient_encounter_obst"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obstacle_timeout_ = std::abs(parameter.as_double());
         }else{
           obstacle_timeout_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "path_obst_stop_dist"){
+      }else if(name == plugin_name_ + ".path_obst_stop_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obst_stop_dist_ = std::abs(parameter.as_double());
         }else{
           obst_stop_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "path_obst_slow_dist"){
+      }else if(name == plugin_name_ + ".path_obst_slow_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obst_slow_dist_ = std::abs(parameter.as_double());
         }else{
           obst_slow_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "vehicle_L"){
+      }else if(name == plugin_name_ + ".vehicle_L"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           vehicle_L_ = std::abs(parameter.as_double());
         }else{
           vehicle_L_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "inversion_xy_tolerance"){
+      }else if(name == plugin_name_ + ".inversion_xy_tolerance"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           inversion_xy_tolerance_ = std::abs(parameter.as_double());
         }else{
           inversion_xy_tolerance_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "latteral_err_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[0] = std::abs(parameter.as_double());
         }else{
           Q_[0] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "latteral_err_dot_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_dot_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[1] = std::abs(parameter.as_double());
         }else{
           Q_[1] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "angle_err_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[2] = std::abs(parameter.as_double());
         }else{
           Q_[2] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "angle_err_dot_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_dot_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[3] = std::abs(parameter.as_double());
         }else{
           Q_[3] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "v_err_penalty"){
+      }else if(name == plugin_name_ + ".v_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[4] = std::abs(parameter.as_double());
         }else{
           Q_[4] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "w_effort_penalty"){
+      }else if(name == plugin_name_ + ".w_effort_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           R_[0] = std::abs(parameter.as_double());
         }else{
           R_[0] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "acc_effort_penalty"){
+      }else if(name == plugin_name_ + ".acc_effort_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           R_[1] = std::abs(parameter.as_double());
@@ -1199,16 +1219,18 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
       obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));
     } else if (type == ParameterType::PARAMETER_BOOL) {
-      if(name == plugin_name_ + "use_obstacle_stopping"){
+      if(name == plugin_name_ + ".use_obstacle_stopping"){
         use_obstacle_stopping_ = parameter.as_bool();
+      }else if(name == plugin_name_ + ".use_output_filter"){
+        use_output_filter_ = parameter.as_bool();
       }
-      RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
+      // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {
-      if(name == plugin_name_ + "robot_search_pose_dist"){
+      if(name == plugin_name_ + ".robot_search_pose_dist"){
         use_obstacle_stopping_ = parameter.as_int();
       }
       RCLCPP_INFO(logger_,"parameter %s changed to %ld",parameter.get_name().c_str(),parameter.as_int());
-    }
+    } 
   }
   result.successful = true;
   return result;
