@@ -2,17 +2,16 @@
 #include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
-#include <iterator>
 #include <nav2_util/geometry_utils.hpp>
 #include <nav_msgs/msg/detail/path__struct.hpp>
+#include <numeric>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/time.hpp>
+#include <std_msgs/msg/detail/float32_multi_array__struct.hpp>
 #include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
-#include <iostream>
 #include <memory>
-#include <unordered_set>
 #include <vector>
 #include <cmath>
 #include "lqr_controller/lqr_controller.hpp"
@@ -134,12 +133,13 @@ void LqrController::configure(
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
   error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
+  debug_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("lqr_debug", 10);
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
-  max_steer_rate_ = 0.9;
+  max_steer_rate_ = 0.5;
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
@@ -157,6 +157,7 @@ void LqrController::cleanup()
   target_pub_.reset();
   collision_polygon_pub_.reset();
   error_code_pub_.reset();
+  debug_pub_.reset();
   // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
@@ -173,6 +174,7 @@ void LqrController::activate()
   target_pub_->on_activate();
   collision_polygon_pub_->on_activate();
   error_code_pub_->on_activate();
+  debug_pub_->on_activate();
   cusp_pub_->on_activate();
   // Remove these lines if publishers aren't needed
   
@@ -199,6 +201,7 @@ void LqrController::deactivate()
   target_pub_->on_deactivate();
   collision_polygon_pub_->on_deactivate();
   error_code_pub_->on_deactivate();
+  debug_pub_->on_deactivate();
   // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
@@ -869,6 +872,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   geometry_msgs::msg::TwistStamped cmd_vel;
 
+  static vector<double> kesi_history;
+
   // if(global_plan_.poses.size()==0){
   //   throw nav2_core::PlannerException("path list is empty, please check planner."); 
   // }
@@ -973,7 +978,14 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
   // std::cout << "compute u" << std::endl;
-  U control = lqr_controller_->cal_vel();//计算输入[v, kesi]
+  Matrix5x1 state;
+  U control = lqr_controller_->cal_vel(state);//计算输入[v, kesi]
+  std_msgs::msg::Float32MultiArray debug_info;
+  for (int i = 0; i < 5; i++)
+  {
+    debug_info.data.push_back(state(i));
+  }
+  
   // std::cout << "u completed" << std::endl;
   if(U_r.v==0)control.v = 0;
 
@@ -983,27 +995,41 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   //   RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
   // }
 
+  // mean filter to smooth kesi
+  if(use_output_filter_ == true){
+    if(kesi_history.size()==4){
+      kesi_history.erase(kesi_history.begin());
+      kesi_history.push_back(control.kesi);
+      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/4;
+    }else{
+      kesi_history.push_back(control.kesi);
+    }
+  }
+  
+  double gain_kesi = (control.kesi - kesi_)/dt_;
+  double kesi_gain_valid = clamp(gain_kesi,-max_steer_rate_,max_steer_rate_);
+
+  kesi_ = kesi_ + kesi_gain_valid*dt_;
+
   double vx = clamp(control.v,-max_bvx_,max_fvx_);
   double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
     cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
     cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
-    RCLCPP_INFO(logger_,"filter on");
+    // RCLCPP_INFO(logger_,"filter on");
   }else{
     cmd_vel.twist.linear.x = vx;
     cmd_vel.twist.angular.z = az;
-    RCLCPP_INFO(logger_,"filter off");
+    // RCLCPP_INFO(logger_,"filter off");
   }
   
-  kesi_ = control.kesi;
-
-  RCLCPP_INFO(logger_,"az%lf cmdaz:%lf",az,cmd_vel.twist.angular.z);
-
+  debug_info.data.push_back(kesi_);
+  debug_info.data.push_back(control.v);
+  debug_info.data.push_back(U_r.kesi);
+  debug_pub_->publish(debug_info);
   last_cmd_vel_.angular.z = az;
   last_cmd_vel_.linear.x = vx;
-
-  
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
@@ -1016,8 +1042,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }
 
   last_control_time = now;
-  // cmd_vel.twist.linear.x = 0;
-  // cmd_vel.twist.angular.z= 0;
   error_code_pub_->publish(ErrCode);
   return cmd_vel;
 }
