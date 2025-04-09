@@ -2,16 +2,16 @@
 #include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
-#include <iterator>
 #include <nav2_util/geometry_utils.hpp>
 #include <nav_msgs/msg/detail/path__struct.hpp>
+#include <numeric>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/time.hpp>
+#include <std_msgs/msg/detail/float32_multi_array__struct.hpp>
+#include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
-#include <iostream>
 #include <memory>
-#include <unordered_set>
 #include <vector>
 #include <cmath>
 #include "lqr_controller/lqr_controller.hpp"
@@ -65,6 +65,8 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_output_filter", rclcpp::ParameterValue(false));  
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
@@ -103,6 +105,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
+  node->get_parameter(plugin_name_ + ".use_output_filter", use_output_filter_);
   node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
   node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
   node->get_parameter(plugin_name_ + ".path_obst_slow_dist", obst_slow_dist_);
@@ -129,12 +132,14 @@ void LqrController::configure(
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
+  error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
+  debug_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("lqr_debug", 10);
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
-  max_steer_rate_ = 0.9;
+  max_steer_rate_ = 0.5;
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
@@ -151,6 +156,8 @@ void LqrController::cleanup()
   lqr_path_pub_.reset();
   target_pub_.reset();
   collision_polygon_pub_.reset();
+  error_code_pub_.reset();
+  debug_pub_.reset();
   // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
@@ -166,6 +173,8 @@ void LqrController::activate()
   lqr_path_pub_->on_activate();
   target_pub_->on_activate();
   collision_polygon_pub_->on_activate();
+  error_code_pub_->on_activate();
+  debug_pub_->on_activate();
   cusp_pub_->on_activate();
   // Remove these lines if publishers aren't needed
   
@@ -191,6 +200,8 @@ void LqrController::deactivate()
   lqr_path_pub_->on_deactivate();
   target_pub_->on_deactivate();
   collision_polygon_pub_->on_deactivate();
+  error_code_pub_->on_deactivate();
+  debug_pub_->on_deactivate();
   // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
@@ -239,7 +250,7 @@ double LqrController::lerp(double a, double b, double t) {
 
 // 角度插值函数（考虑周期性）
 double LqrController::angle_lerp(double a, double b, double t) {
-  double delta = fmod(b - a + M_PI, 2 * M_PI) - M_PI;
+  double delta = atan2(sin(b - a), cos(b - a)); // 计算最短角度差
   return a + t * delta;
 }
 
@@ -292,7 +303,9 @@ std::vector<geometry_msgs::msg::PoseStamped> LqrController::resample_path(const 
           get_yaw_from_quaternion(poses[index + 1].pose.orientation),
           t
       );
-
+      // RCLCPP_INFO(logger_, "yaw i: %f, yaw i+1: %f, t: %f theta:%f", get_yaw_from_quaternion(poses[index].pose.orientation),
+      //                                                     get_yaw_from_quaternion(poses[index + 1].pose.orientation),
+      //                                                     t,theta);
       // 创建新的 PoseStamped
       geometry_msgs::msg::PoseStamped pose_stamped;
       pose_stamped.header = poses[index].header; // 保留原始 header
@@ -751,10 +764,10 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
       optimizeCurveInternalSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list,index_set);
       optimizeCurveSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list);
     }
-    for(size_t i=0;i<max_v_curvature_list.size();i++){
-      cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
-    }
-    cout << endl;
+    // for(size_t i=0;i<max_v_curvature_list.size();i++){
+    //   cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
+    // }
+    // cout << endl;
   }
 
   // get obstacle affected speed list
@@ -855,8 +868,11 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
+  std_msgs::msg::UInt64MultiArray ErrCode;
 
   geometry_msgs::msg::TwistStamped cmd_vel;
+
+  static vector<double> kesi_history;
 
   // if(global_plan_.poses.size()==0){
   //   throw nav2_core::PlannerException("path list is empty, please check planner."); 
@@ -932,6 +948,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+    ErrCode.data.push_back(100006);
     if(encounter_obst_moment_logged_ == false){
       encounter_obst_moment_logged_ = true;
       encounter_obst_moment_ = clock_->now().seconds();
@@ -944,6 +961,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     }
   }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
     RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
+    ErrCode.data.push_back(100005);
     encounter_obst_moment_logged_ = false;
   }else{
     encounter_obst_moment_logged_ = false;
@@ -960,7 +978,14 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
   // std::cout << "compute u" << std::endl;
-  U control = lqr_controller_->cal_vel();//计算输入[v, kesi]
+  Matrix5x1 state;
+  U control = lqr_controller_->cal_vel(state);//计算输入[v, kesi]
+  std_msgs::msg::Float32MultiArray debug_info;
+  for (int i = 0; i < 5; i++)
+  {
+    debug_info.data.push_back(state(i));
+  }
+  
   // std::cout << "u completed" << std::endl;
   if(U_r.v==0)control.v = 0;
 
@@ -970,10 +995,41 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   //   RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
   // }
 
-  cmd_vel.twist.linear.x = clamp(control.v,-max_bvx_,max_fvx_);
-  // RCLCPP_INFO(logger_,"original az: %.2f",control.v*tan(control.kesi)/vehicle_L_);
-  cmd_vel.twist.angular.z = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
-  kesi_ = control.kesi;
+  // mean filter to smooth kesi
+  if(use_output_filter_ == true){
+    if(kesi_history.size()==4){
+      kesi_history.erase(kesi_history.begin());
+      kesi_history.push_back(control.kesi);
+      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/4;
+    }else{
+      kesi_history.push_back(control.kesi);
+    }
+  }
+  
+  double gain_kesi = (control.kesi - kesi_)/dt_;
+  double kesi_gain_valid = clamp(gain_kesi,-max_steer_rate_,max_steer_rate_);
+
+  kesi_ = kesi_ + kesi_gain_valid*dt_;
+
+  double vx = clamp(control.v,-max_bvx_,max_fvx_);
+  double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
+
+  if(use_output_filter_ == true){
+    cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
+    cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
+    // RCLCPP_INFO(logger_,"filter on");
+  }else{
+    cmd_vel.twist.linear.x = vx;
+    cmd_vel.twist.angular.z = az;
+    // RCLCPP_INFO(logger_,"filter off");
+  }
+  
+  debug_info.data.push_back(kesi_);
+  debug_info.data.push_back(control.v);
+  debug_info.data.push_back(U_r.kesi);
+  debug_pub_->publish(debug_info);
+  last_cmd_vel_.angular.z = az;
+  last_cmd_vel_.linear.x = vx;
 
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
@@ -986,9 +1042,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }
 
   last_control_time = now;
-  // cmd_vel.twist.linear.x = 0;
-  // cmd_vel.twist.angular.z= 0;
-
+  error_code_pub_->publish(ErrCode);
   return cmd_vel;
 }
 
@@ -1058,126 +1112,126 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_wz_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_linear_accel"){
+      }else if(name == plugin_name_ + ".max_linear_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_lin_acc_ = std::abs(parameter.as_double());
         }else{
           max_lin_acc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "min_linear_deaccel"){
+      }else if(name == plugin_name_ + ".min_linear_deaccel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           min_lin_deacc_ = std::abs(parameter.as_double());
         }else{
           min_lin_deacc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_lateral_accel"){
+      }else if(name == plugin_name_ + ".max_lateral_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_lateral_accel_ = std::abs(parameter.as_double());
         }else{
           max_lateral_accel_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "max_w_accel"){
+      }else if(name == plugin_name_ + ".max_w_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_w_acc_ = std::abs(parameter.as_double());
         }else{
           max_w_acc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "dead_band_speed"){
+      }else if(name == plugin_name_ + ".dead_band_speed"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           dead_band_speed_ = std::abs(parameter.as_double());
         }else{
           dead_band_speed_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "approach_velocity_scaling_dist"){
+      }else if(name == plugin_name_ + ".approach_velocity_scaling_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           approach_velocity_scaling_dist_ = std::abs(parameter.as_double());
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "patient_encounter_obst"){
+      }else if(name == plugin_name_ + ".patient_encounter_obst"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obstacle_timeout_ = std::abs(parameter.as_double());
         }else{
           obstacle_timeout_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "path_obst_stop_dist"){
+      }else if(name == plugin_name_ + ".path_obst_stop_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obst_stop_dist_ = std::abs(parameter.as_double());
         }else{
           obst_stop_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "path_obst_slow_dist"){
+      }else if(name == plugin_name_ + ".path_obst_slow_dist"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           obst_slow_dist_ = std::abs(parameter.as_double());
         }else{
           obst_slow_dist_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "vehicle_L"){
+      }else if(name == plugin_name_ + ".vehicle_L"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           vehicle_L_ = std::abs(parameter.as_double());
         }else{
           vehicle_L_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "inversion_xy_tolerance"){
+      }else if(name == plugin_name_ + ".inversion_xy_tolerance"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           inversion_xy_tolerance_ = std::abs(parameter.as_double());
         }else{
           inversion_xy_tolerance_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "latteral_err_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[0] = std::abs(parameter.as_double());
         }else{
           Q_[0] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "latteral_err_dot_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_dot_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[1] = std::abs(parameter.as_double());
         }else{
           Q_[1] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "angle_err_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[2] = std::abs(parameter.as_double());
         }else{
           Q_[2] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "angle_err_dot_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_dot_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[3] = std::abs(parameter.as_double());
         }else{
           Q_[3] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "v_err_penalty"){
+      }else if(name == plugin_name_ + ".v_err_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           Q_[4] = std::abs(parameter.as_double());
         }else{
           Q_[4] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "w_effort_penalty"){
+      }else if(name == plugin_name_ + ".w_effort_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           R_[0] = std::abs(parameter.as_double());
         }else{
           R_[0] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + "acc_effort_penalty"){
+      }else if(name == plugin_name_ + ".acc_effort_penalty"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           R_[1] = std::abs(parameter.as_double());
@@ -1189,16 +1243,18 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
       obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));
     } else if (type == ParameterType::PARAMETER_BOOL) {
-      if(name == plugin_name_ + "use_obstacle_stopping"){
+      if(name == plugin_name_ + ".use_obstacle_stopping"){
         use_obstacle_stopping_ = parameter.as_bool();
+      }else if(name == plugin_name_ + ".use_output_filter"){
+        use_output_filter_ = parameter.as_bool();
       }
-      RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
+      // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {
-      if(name == plugin_name_ + "robot_search_pose_dist"){
+      if(name == plugin_name_ + ".robot_search_pose_dist"){
         use_obstacle_stopping_ = parameter.as_int();
       }
       RCLCPP_INFO(logger_,"parameter %s changed to %ld",parameter.get_name().c_str(),parameter.as_int());
-    }
+    } 
   }
   result.successful = true;
   return result;

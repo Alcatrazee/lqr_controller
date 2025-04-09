@@ -61,7 +61,7 @@ Matrix2x5 LQR::cal_Riccati() {
 	Matrix5x5 Qf = Q;
 	Matrix5x5 P = Qf;//迭代初始值
 	Matrix5x5 Pn;//计算的最新P矩阵
-	
+	// int num_of_iter = 0;
 	for (int iter_num = 0; iter_num < N; iter_num++) {
 		Pn = Q + A_d.transpose() * P * A_d - A_d.transpose() * P * B_d * (R + B_d.transpose() * P * B_d).inverse() * B_d.transpose() * P * A_d;//迭代公式
 		// cout << "收敛误差为" << (Pn - P).array().abs().maxCoeff() << endl;
@@ -76,14 +76,17 @@ Matrix2x5 LQR::cal_Riccati() {
 			break;
 		}
 		P = Pn;
+		// num_of_iter++;
 	}
+	// cout << "迭代次数" << num_of_iter << endl;
+	
 	// cout << "P: " << P << endl;
 	//P = Q;
 	Matrix2x5 K = (R + B_d.transpose() * P * B_d).inverse() * B_d.transpose() * P * A_d;//反馈率K
 	return K;
 }
  
-U LQR::cal_vel() {
+U LQR::cal_vel(Matrix5x1 &State) {
 	U output;
 	param_struct();		// formulate A B Q R matrices
 	Matrix2x5 K = cal_Riccati();	// solve DARE
@@ -122,6 +125,8 @@ U LQR::cal_vel() {
 		   e_th,
 		   e_th_dot,
 		   v_car-v_d;	// velocity error
+
+	State = X_e;
 	
 	// cout << "X_e矩阵为:\n" << X_e << endl;
 	// cout << "X_e" << endl;
@@ -143,7 +148,7 @@ U LQR::cal_vel() {
 	}
 	
 	if(!isnan(U[0])){
-		output.kesi = U[0] + kesi_d;
+		output.kesi =  U[0] + kesi_d;
 	}else{
 		output.kesi = kesi_d;
 		cerr << "nan U0" << endl;

@@ -39,7 +39,7 @@ public:
 	void initial(double L_, double T_, vehicleState car, waypoint waypoint, U U_r, double* Q_, double* R_);//初始化
 	void param_struct();//构造状态方程参数
 	Matrix2x5 cal_Riccati();//黎卡提方程求解
-	U cal_vel();//LQR控制器计算速度
+	U cal_vel(Matrix5x1 &State);//LQR控制器计算速度
 	void test();
 };
  
