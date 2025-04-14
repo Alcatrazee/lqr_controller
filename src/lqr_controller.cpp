@@ -20,6 +20,7 @@
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 #include "lqr_controller/Tool.h"
 #include <algorithm>
+#include <angles/angles.h>
 #include <geometry_msgs/msg/polygon_stamped.hpp>
 
 using nav2_util::declare_parameter_if_not_declared;
@@ -349,7 +350,7 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   encounter_obst_moment_logged_ = false;
 }
 
-double get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
+double LqrController::get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
   tf2::Quaternion q(pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
   tf2::Matrix3x3 m(q);
   double roll, pitch, yaw;
@@ -860,6 +861,44 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
   return kappa_d_kappa;
 }
 
+geometry_msgs::msg::PoseStamped LqrController::interpolate_pose(
+  const geometry_msgs::msg::PoseStamped & pose,
+  const geometry_msgs::msg::PoseStamped & a,
+  const geometry_msgs::msg::PoseStamped & b)
+{
+  geometry_msgs::msg::PoseStamped result;
+  result.header = pose.header;  // 使用车辆自身的时间与坐标系
+
+  // 1. 计算投影点坐标
+  double dx = b.pose.position.x - a.pose.position.x;
+  double dy = b.pose.position.y - a.pose.position.y;
+  double len_sq = dx * dx + dy * dy;
+
+  double t = 0.0;
+  if (len_sq > 0.0) {
+    t = ((pose.pose.position.x - a.pose.position.x) * dx +
+         (pose.pose.position.y - a.pose.position.y) * dy) / len_sq;
+    t = std::clamp(t, 0.0, 1.0);
+  }
+
+  result.pose.position.x = a.pose.position.x + t * dx;
+  result.pose.position.y = a.pose.position.y + t * dy;
+  result.pose.position.z = a.pose.position.z + t * (b.pose.position.z - a.pose.position.z);
+
+  // 2. 方向取 a 和 b 的 yaw 均值
+  double yaw_a = tf2::getYaw(a.pose.orientation);
+  double yaw_b = tf2::getYaw(b.pose.orientation);
+  double angle_yaw = angle_lerp(yaw_a,yaw_b, t);//yaw_a + t*(yaw_b - yaw_a);
+  RCLCPP_INFO(logger_,"yaw b :%f yaw a :%f, angle_yaw:%f ,t :%f",yaw_b,yaw_a,angle_yaw,t);
+  // double avg_yaw = angles::normalize_angle((yaw_a + yaw_b) / 2.0);
+
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, angle_yaw);
+  result.pose.orientation = tf2::toMsg(q);
+//  RCLCPP_INFO(logger_,"robot pose (%f,%f) a (%f,%f) b (%f,%f) result (%f,%f) ",pose.pose.position.x,pose.pose.position.y,a.pose.position.x,a.pose.position.y,b.pose.position.x,b.pose.position.y,result.pose.position.x,result.pose.position.y);
+  return result;
+}
+
 geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & speed,
@@ -919,11 +958,20 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // get target point to track and publish 
   int target_index = Find_target_index(global_pose,local_plan);
-  // RCLCPP_INFO(logger_,"target index %d",target_index);
+
   geometry_msgs::msg::PoseStamped target_pose;
+  if(target_index!=0){
+    target_pose = interpolate_pose(global_pose,local_plan.poses[target_index-1],local_plan.poses[target_index]);
+    RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
+  }else{
+    target_pose.pose = local_plan.poses[0].pose;
+  }
+
+  // RCLCPP_INFO(logger_,"target index %d",target_index);
+  // geometry_msgs::msg::PoseStamped target_pose;
   target_pose.header.stamp = rclcpp::Time();
   target_pose.header.frame_id = "map";
-  target_pose.pose = local_plan.poses[target_index].pose;
+  // target_pose.pose = local_plan.poses[target_index].pose;
   target_pub_->publish(target_pose);
   // get waypoints list
   for(size_t i=0;i<local_plan.poses.size();i++){
@@ -934,8 +982,11 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     wp.yaw = get_yaw(local_plan.poses[i]);
     wps.push_back(wp);
   }
-  waypoint Point = wps[target_index];
+
+  waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw(target_pose)});//wps[target_index];
+  
   // remove duplicated points to ensure cusp can be identified correctly
+  // TODO: do it in set plan callback
   remove_duplicated_points(wps);
 
   // compute curvature and apply constraints to speed
