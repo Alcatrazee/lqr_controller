@@ -731,7 +731,7 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
     
     // goal constrain 
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
-    double max_v_distance = std::max(approach_v_gain_*distance_to_goal,(double)v_min);
+    double max_v_distance = std::max(sqrt(2*min_lin_deacc_*distance_to_goal),(double)v_min);
     if(wp[i].x == global_plan_.poses.back().pose.position.x &&
       wp[i].y == global_plan_.poses.back().pose.position.y &&
       wp[i].yaw == get_yaw(global_plan_.poses.back()))
@@ -765,10 +765,6 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
       optimizeCurveInternalSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list,index_set);
       optimizeCurveSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list);
     }
-    // for(size_t i=0;i<max_v_curvature_list.size();i++){
-    //   cout << "[" << i << "] " << max_v_curvature_list_copy[i] << "," << max_v_curvature_list[i] << endl;
-    // }
-    // cout << endl;
   }
 
   // get obstacle affected speed list
@@ -779,7 +775,8 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
       if(distance_to_obst[i] < obst_stop_dist_ && distance_to_obst[i]>0){
         max_v_obst = 0;
       }else if(distance_to_obst[i] < obst_slow_dist_ && distance_to_obst[i] > obst_stop_dist_){
-        max_v_obst = obst_speed_control_k_*distance_to_obst[i]+obst_speed_control_b_;
+        // max_v_obst = obst_speed_control_k_*distance_to_obst[i]+obst_speed_control_b_;
+        max_v_obst = sqrt(2*min_lin_deacc_*(distance_to_obst[i] - obst_stop_dist_));
       }
     }
     max_v_obstacle_list[i] = max_v_obst;
@@ -864,7 +861,9 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
 geometry_msgs::msg::PoseStamped LqrController::interpolate_pose(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::PoseStamped & a,
-  const geometry_msgs::msg::PoseStamped & b)
+  const geometry_msgs::msg::PoseStamped & b,
+  vector<double> & speeds,double &ref_interpolated_speed,
+  vector<double> & kappas,double &kappa_interpolated)
 {
   geometry_msgs::msg::PoseStamped result;
   result.header = pose.header;  // 使用车辆自身的时间与坐标系
@@ -889,6 +888,8 @@ geometry_msgs::msg::PoseStamped LqrController::interpolate_pose(
   double yaw_a = tf2::getYaw(a.pose.orientation);
   double yaw_b = tf2::getYaw(b.pose.orientation);
   double angle_yaw = angle_lerp(yaw_a,yaw_b, t);//yaw_a + t*(yaw_b - yaw_a);
+  ref_interpolated_speed = lerp(speeds[0],speeds[1],t);
+  kappa_interpolated = lerp(kappas[0],kappas[1],t);
   RCLCPP_INFO(logger_,"yaw b :%f yaw a :%f, angle_yaw:%f ,t :%f",yaw_b,yaw_a,angle_yaw,t);
   // double avg_yaw = angles::normalize_angle((yaw_a + yaw_b) / 2.0);
 
@@ -949,9 +950,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }
   lqr_path_pub_->publish(local_plan);
 
-  // declare LQR controller
-  
-  
   // prepare lqr controller 
   std::vector<waypoint> wps;
   robot_state_ = vehicleState{global_pose.pose.position.x,global_pose.pose.position.y,get_yaw(global_pose), speed.linear.x,kesi_};
@@ -959,20 +957,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // get target point to track and publish 
   int target_index = Find_target_index(global_pose,local_plan);
 
-  geometry_msgs::msg::PoseStamped target_pose;
-  if(target_index!=0){
-    target_pose = interpolate_pose(global_pose,local_plan.poses[target_index-1],local_plan.poses[target_index]);
-    RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
-  }else{
-    target_pose.pose = local_plan.poses[0].pose;
-  }
-
-  // RCLCPP_INFO(logger_,"target index %d",target_index);
-  // geometry_msgs::msg::PoseStamped target_pose;
-  target_pose.header.stamp = rclcpp::Time();
-  target_pose.header.frame_id = "map";
-  // target_pose.pose = local_plan.poses[target_index].pose;
-  target_pub_->publish(target_pose);
   // get waypoints list
   for(size_t i=0;i<local_plan.poses.size();i++){
     waypoint wp;
@@ -982,21 +966,38 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     wp.yaw = get_yaw(local_plan.poses[i]);
     wps.push_back(wp);
   }
-
-  waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw(target_pose)});//wps[target_index];
-  
   // remove duplicated points to ensure cusp can be identified correctly
   // TODO: do it in set plan callback
   remove_duplicated_points(wps);
+
 
   // compute curvature and apply constraints to speed
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<vector<double>> kappa_d_kappa_list = get_kappa_d_kappa(wps);
   vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
-  // for(size_t i=0;i<wps.size();i++) {
-  //   RCLCPP_INFO(logger_,"%ld  k2%f dk:%f",i,kappa_d_kappa_list[i][0],kappa_d_kappa_list[i][1]);
-  // }
-  
+
+
+  // interpolate pose for smooth curvature
+  geometry_msgs::msg::PoseStamped target_pose;
+  double ref_velocity = sp[target_index];
+  double K = kappa_d_kappa_list[target_index][0];
+  if(target_index!=0){
+    vector<double> sp_interp({sp[target_index-1],sp[target_index]});
+    vector<double> kappa_interp({kappa_d_kappa_list[target_index-1][0],kappa_d_kappa_list[target_index][0]});
+    target_pose = interpolate_pose(global_pose,local_plan.poses[target_index-1],local_plan.poses[target_index],sp_interp,ref_velocity,kappa_interp,K);
+    RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
+  }else{
+    target_pose.pose = local_plan.poses[0].pose;
+  }
+
+  // RCLCPP_INFO(logger_,"target index %d",target_index);
+  target_pose.header.stamp = rclcpp::Time();
+  target_pose.header.frame_id = "map";
+  target_pub_->publish(target_pose);
+
+  waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw(target_pose)});//wps[target_index];
+
+  // check obstacle
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     ErrCode.data.push_back(100006);
@@ -1017,14 +1018,18 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }else{
     encounter_obst_moment_logged_ = false;
   }
-  // get curvature of tracking point
-  double K = kappa_d_kappa_list[target_index][0];
+
+
+
+  // if(target_index!=0){
+  //   K = lerp(kappa_d_kappa_list[target_index][0],kappa_d_kappa_list[target_index-1][0],(double)target_index/(double)wps.size());
+  // }
   double kesi = atan2(vehicle_L_ * K, 1);   // reference steer angle
 
   // reference input
   U U_r;
-  U_r.v = sp[target_index];   // apply reference speed
-  U_r.kesi = kesi*(sp[target_index]>=0?1:-1);
+  U_r.v = ref_velocity; //sp[target_index];   // apply reference speed
+  U_r.kesi = kesi*(U_r.v>=0?1:-1);
 
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 

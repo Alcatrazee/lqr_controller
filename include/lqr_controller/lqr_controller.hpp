@@ -116,7 +116,9 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   geometry_msgs::msg::PoseStamped interpolate_pose(
     const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::PoseStamped & a,
-    const geometry_msgs::msg::PoseStamped & b);
+    const geometry_msgs::msg::PoseStamped & b,
+    vector<double> & speeds,double &ref_interpolated_speed,
+    vector<double> & kappas,double &kappa_interpolated);
 
   /**
    * @brief nav2_core setPlan - Sets the global plan
