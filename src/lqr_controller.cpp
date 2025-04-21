@@ -53,8 +53,8 @@ void LqrController::configure(
     node, plugin_name_ + ".max_bvx", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
-  declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.50));
+  // declare_parameter_if_not_declared(
+    // node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".min_linear_deaccel", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
@@ -100,7 +100,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
   node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
-  node->get_parameter(plugin_name_ + ".min_linear_deaccel", min_lin_deacc_);
+  // node->get_parameter(plugin_name_ + ".min_linear_deaccel", min_lin_deacc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
@@ -123,6 +123,8 @@ void LqrController::configure(
   
   obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
   obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
+  min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
+  RCLCPP_INFO(logger_,"computed linear deaccleration %lf",min_lin_deacc_);
   if(approach_velocity_scaling_dist_!=0)
     approach_v_gain_ = max_fvx_/approach_velocity_scaling_dist_;
   else
@@ -890,7 +892,7 @@ geometry_msgs::msg::PoseStamped LqrController::interpolate_pose(
   double angle_yaw = angle_lerp(yaw_a,yaw_b, t);//yaw_a + t*(yaw_b - yaw_a);
   ref_interpolated_speed = lerp(speeds[0],speeds[1],t);
   kappa_interpolated = lerp(kappas[0],kappas[1],t);
-  RCLCPP_INFO(logger_,"yaw b :%f yaw a :%f, angle_yaw:%f ,t :%f",yaw_b,yaw_a,angle_yaw,t);
+  // RCLCPP_INFO(logger_,"yaw b :%f yaw a :%f, angle_yaw:%f ,t :%f",yaw_b,yaw_a,angle_yaw,t);
   // double avg_yaw = angles::normalize_angle((yaw_a + yaw_b) / 2.0);
 
   tf2::Quaternion q;
@@ -985,7 +987,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     vector<double> sp_interp({sp[target_index-1],sp[target_index]});
     vector<double> kappa_interp({kappa_d_kappa_list[target_index-1][0],kappa_d_kappa_list[target_index][0]});
     target_pose = interpolate_pose(global_pose,local_plan.poses[target_index-1],local_plan.poses[target_index],sp_interp,ref_velocity,kappa_interp,K);
-    RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
+    // RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
   }else{
     target_pose.pose = local_plan.poses[0].pose;
   }
@@ -1175,14 +1177,16 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_lin_acc_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".min_linear_deaccel"){
-        if(parameter.as_double() < 0){
-          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          min_lin_deacc_ = std::abs(parameter.as_double());
-        }else{
-          min_lin_deacc_ = parameter.as_double();
-        }
-      }else if(name == plugin_name_ + ".max_lateral_accel"){
+      }
+      // else if(name == plugin_name_ + ".min_linear_deaccel"){
+      //   if(parameter.as_double() < 0){
+      //     RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+      //     min_lin_deacc_ = std::abs(parameter.as_double());
+      //   }else{
+      //     min_lin_deacc_ = parameter.as_double();
+      //   }
+      // }
+      else if(name == plugin_name_ + ".max_lateral_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_lateral_accel_ = std::abs(parameter.as_double());
