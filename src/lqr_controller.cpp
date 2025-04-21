@@ -1214,6 +1214,7 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
+        min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
       }else if(name == plugin_name_ + ".patient_encounter_obst"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
