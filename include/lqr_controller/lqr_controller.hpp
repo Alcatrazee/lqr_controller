@@ -114,6 +114,10 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     vector<double>& distance_to_obst,
     int path_offset);
   
+  vector<vector<int>> find_curve(vector<vector<double>>&K_list,double bound);
+
+  int findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index);
+
   vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
   
   geometry_msgs::msg::PoseStamped interpolate_pose(
