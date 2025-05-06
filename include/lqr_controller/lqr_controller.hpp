@@ -18,11 +18,9 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "nav2_util/odometry_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
-#include "geometry_msgs/msg/pose2_d.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
-#include "geometry_msgs/msg/point_stamped.hpp"
 #include <nav_msgs/msg/path.hpp>
 #include <lqr_controller/LQR.hpp>
 #include <vector>
@@ -46,10 +44,6 @@ public:
    * @brief Constructor for lqr controller 
    */
   LqrController() = default;
-
-  // LqrController(MatrixXd& A, MatrixXd& B, MatrixXd& Q, MatrixXd& R, MatrixXd& QT, MatrixXd& H, std::vector<VectorXd>& r, int T) : A_(A), B_(B), Q_(Q), R_(R), QT_(QT), H_(H), r_(r), T_(T) {
-  //   init();
-  // }
 
   /**
    * @brief Destrructor for lqr controller 
@@ -99,9 +93,18 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::Twist & /*speed */,
-    nav2_core::GoalChecker * /*goal_checker*/) override;
+    nav2_core::GoalChecker * goal_checker) override;
 
-  vector<double> get_speed_profile(vehicleState state,
+  vector<double> optimizeCurveConstraints(
+    const vector<waypoint>& wp,
+    vector<double>& max_v_curvature_list,
+      vector<vector<double>>& curvature_list,
+    double max_lin_acc_,
+    double min_lin_deacc_);
+
+  bool determin_backward(vehicleState &state,vector<waypoint>& wp);
+
+  vector<double> get_speed_profile(vehicleState &state,
     float fv_max,
     float bv_max,
     float v_min,
@@ -112,7 +115,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     int path_offset);
   
   vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
-  double get_yaw(const geometry_msgs::msg::PoseStamped & pose);
+  
   geometry_msgs::msg::PoseStamped interpolate_pose(
     const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::PoseStamped & a,
@@ -124,11 +127,14 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * @brief nav2_core setPlan - Sets the global plan
    * @param path The global plan
    */
-    void setPlan(const nav_msgs::msg::Path & path) override;
+  void setPlan(const nav_msgs::msg::Path & path) override;
 
   nav_msgs::msg::Path grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset);
+  
   void remove_duplicated_points(vector<waypoint>& points);
+
   int Find_target_index(const geometry_msgs::msg::PoseStamped & state, nav_msgs::msg::Path &local_path);
+  
   /**
    * @brief Cost at a point
    * @param x Pose of pose x
@@ -145,6 +151,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * or in absolute values in false case.
    */
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
+
   void removeDuplicatedPathPoint(nav_msgs::msg::Path & path);
   /**
    * @brief Callback executed when a parameter change is detected
@@ -156,14 +163,13 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     const std::string frame,
     const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
-  void optimizeSpeedsDP(vector<double>& speeds, const vector<double>& distances, 
-    double acc_max, double deacc_max, const unordered_set<int>& fixed_indices);
-    int findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index);
-    vector<vector<int>> find_curve(vector<vector<double>>&K_list,double bound);
+
   vector<int> find_cusp(const nav_msgs::msg::Path & path);
+
   vector<vector<double>> get_kappa_d_kappa(vector<waypoint>& wp);
 
   void publish_collision_polygon(const geometry_msgs::msg::PoseStamped& pose);
+
   void forwardOptimize(vector<double>& speeds, const vector<double>& distances, 
     double deacc_max, int start_index);
   void backwardOptimize(vector<double>& speeds, const vector<double>& distances, 
@@ -184,14 +190,11 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
     double deacc_max, int start_index, int end_index);
   
 
-    double lerp(double a, double b, double t);
-    double angle_lerp(double a, double b, double t);
-    double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
-    std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
-    /**
-   * @brief crop path within costmap
-   * @param 
-   */
+  double lerp(double a, double b, double t);
+  double angle_lerp(double a, double b, double t);
+  double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
+
+  std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
 
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
