@@ -57,12 +57,13 @@ Matrix2x5 LQR::cal_Riccati() {
 	using namespace Eigen;
 	int N = 1000;//迭代终止次数
 	double err = 100;//误差值
-	double err_tolerance = 0.01;//误差收敛阈值
+	double err_tolerance = 1e-6;//误差收敛阈值
 	Matrix5x5 Qf = Q;
-	Matrix5x5 P = Qf;//迭代初始值
+	static Matrix5x5 P = Qf;//迭代初始值
 	Matrix5x5 Pn;//计算的最新P矩阵
 	// int num_of_iter = 0;
 	for (int iter_num = 0; iter_num < N; iter_num++) {
+		// num_of_iter = iter_num;
 		Pn = Q + A_d.transpose() * P * A_d - A_d.transpose() * P * B_d * (R + B_d.transpose() * P * B_d).inverse() * B_d.transpose() * P * A_d;//迭代公式
 		// cout << "收敛误差为" << (Pn - P).array().abs().maxCoeff() << endl;
 		// cout << Pn << endl;
@@ -76,9 +77,8 @@ Matrix2x5 LQR::cal_Riccati() {
 			break;
 		}
 		P = Pn;
-		// num_of_iter++;
 	}
-	// cout << "迭代次数" << num_of_iter << endl;
+	// cout << "迭代次数" << num_of_iter << "error: " << err << endl;
 	
 	// cout << "P: " << P << endl;
 	//P = Q;
