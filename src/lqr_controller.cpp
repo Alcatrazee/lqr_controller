@@ -75,6 +75,8 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".path_obst_slow_dist", rclcpp::ParameterValue(2.0));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_steer_rate", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".vehicle_L", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".robot_search_pose_dist", rclcpp::ParameterValue(10));
@@ -101,6 +103,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
+  node->get_parameter(plugin_name_ + ".max_steer_rate", max_steer_rate_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
@@ -126,7 +129,7 @@ void LqrController::configure(
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
-  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
+  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 1);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
   error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
@@ -136,7 +139,6 @@ void LqrController::configure(
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
-  max_steer_rate_ = 0.5;
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
@@ -1152,14 +1154,14 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           max_lin_acc_ = parameter.as_double();
         }
       }
-      // else if(name == plugin_name_ + ".min_linear_deaccel"){
-      //   if(parameter.as_double() < 0){
-      //     RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-      //     min_lin_deacc_ = std::abs(parameter.as_double());
-      //   }else{
-      //     min_lin_deacc_ = parameter.as_double();
-      //   }
-      // }
+      else if(name == plugin_name_ + ".max_steer_rate"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          max_steer_rate_ = std::abs(parameter.as_double());
+        }else{
+          max_steer_rate_ = parameter.as_double();
+        }
+      }
       else if(name == plugin_name_ + ".max_lateral_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
@@ -1286,7 +1288,7 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
       // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {
       if(name == plugin_name_ + ".robot_search_pose_dist"){
-        use_obstacle_stopping_ = parameter.as_int();
+        robot_search_pose_dist_ = parameter.as_int();
       }
       RCLCPP_INFO(logger_,"parameter %s changed to %ld",parameter.get_name().c_str(),parameter.as_int());
     } 

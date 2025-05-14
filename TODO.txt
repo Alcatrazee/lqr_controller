@@ -1,5 +1,8 @@
 1. add cusp identification                          done
 2. add obstacle detection                           done
 3. parameterization and dynamic parameterization    done
-4. add forward path computation                     
-5. remove usless code
+
+improvements:
+1. change tracking point to make it a little bit forward
+2. add steering rate control
+3. 出弯时加速慢点
