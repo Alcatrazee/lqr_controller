@@ -83,17 +83,23 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".inversion_xy_tolerance", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".latteral_err_penalty", rclcpp::ParameterValue(8.0));
+    node, plugin_name_ + ".latteral_err_penalty_max", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".latteral_err_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".latteral_err_dot_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".angle_err_penalty", rclcpp::ParameterValue(1.0));
+    node, plugin_name_ + ".angle_err_penalty_max", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".angle_err_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".angle_err_dot_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".v_err_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".w_effort_penalty", rclcpp::ParameterValue(1.0));
+    node, plugin_name_ + ".w_effort_penalty_max", rclcpp::ParameterValue(7.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".w_effort_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
 
@@ -114,12 +120,15 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".vehicle_L", vehicle_L_);
   node->get_parameter(plugin_name_ + ".robot_search_pose_dist", robot_search_pose_dist_);
   node->get_parameter(plugin_name_ + ".inversion_xy_tolerance", inversion_xy_tolerance_);
-  node->get_parameter(plugin_name_ + ".latteral_err_penalty", Q_[0]);
+  node->get_parameter(plugin_name_ + ".latteral_err_penalty_max", Q_max_[0]);
+  node->get_parameter(plugin_name_ + ".latteral_err_penalty_min", Q_min_[0]);
   node->get_parameter(plugin_name_ + ".latteral_err_dot_penalty", Q_[1]);
-  node->get_parameter(plugin_name_ + ".angle_err_penalty", Q_[2]);
+  node->get_parameter(plugin_name_ + ".angle_err_penalty_max", Q_max_[2]);
+  node->get_parameter(plugin_name_ + ".angle_err_penalty_min", Q_min_[2]);
   node->get_parameter(plugin_name_ + ".angle_err_dot_penalty", Q_[3]);
   node->get_parameter(plugin_name_ + ".v_err_penalty", Q_[4]);
-  node->get_parameter(plugin_name_ + ".w_effort_penalty", R_[0]);
+  node->get_parameter(plugin_name_ + ".w_effort_penalty_max", R_max_[0]);
+  node->get_parameter(plugin_name_ + ".w_effort_penalty_min", R_min_[0]);
   node->get_parameter(plugin_name_ + ".acc_effort_penalty", R_[1]);
   
   obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
@@ -1017,6 +1026,21 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   U_r.kesi = kesi*(U_r.v>=0?1:-1);
 
   // initialize lqr controller parameters
+  double alpha = 0;
+  if(abs(speed.linear.x)<max_bvx_){
+    Q_[0] = Q_max_[0];
+    Q_[2] = Q_max_[2];
+    R_[0] = R_min_[0];
+  }else{
+    R_[0] = pow(speed.linear.x,2);
+    // only capable of speed lower than 3.0m/s
+    alpha = (abs(speed.linear.x)-max_bvx_)/(max_fvx_ - max_bvx_);
+    Q_[0] = (1-alpha)*Q_max_[0] + alpha*Q_min_[0];
+    Q_[2] = (1-alpha)*Q_max_[2] + alpha*Q_min_[2];
+    // R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
+  }
+  RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed.linear.x,alpha);
+
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
   Matrix5x1 state;
@@ -1226,12 +1250,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           inversion_xy_tolerance_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".latteral_err_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          Q_[0] = std::abs(parameter.as_double());
+          Q_max_[0] = std::abs(parameter.as_double());
         }else{
-          Q_[0] = parameter.as_double();
+          Q_max_[0] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".latteral_err_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          Q_min_[0] = std::abs(parameter.as_double());
+        }else{
+          Q_min_[0] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".latteral_err_dot_penalty"){
         if(parameter.as_double() < 0){
@@ -1240,12 +1271,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           Q_[1] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".angle_err_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          Q_[2] = std::abs(parameter.as_double());
+          Q_max_[2] = std::abs(parameter.as_double());
         }else{
-          Q_[2] = parameter.as_double();
+          Q_max_[2] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".angle_err_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          Q_min_[2] = std::abs(parameter.as_double());
+        }else{
+          Q_min_[2] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".angle_err_dot_penalty"){
         if(parameter.as_double() < 0){
@@ -1261,12 +1299,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           Q_[4] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".w_effort_penalty"){
+      }else if(name == plugin_name_ + ".w_effort_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          R_[0] = std::abs(parameter.as_double());
+          R_max_[0] = std::abs(parameter.as_double());
         }else{
-          R_[0] = parameter.as_double();
+          R_max_[0] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".w_effort_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          R_min_[0] = std::abs(parameter.as_double());
+        }else{
+          R_min_[0] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".acc_effort_penalty"){
         if(parameter.as_double() < 0){
