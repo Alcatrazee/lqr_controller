@@ -67,6 +67,10 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_output_filter", rclcpp::ParameterValue(false));  
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_direct_output", rclcpp::ParameterValue(false));  
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".steer_smooth_num", rclcpp::ParameterValue(4));  
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".patient_encounter_obst", rclcpp::ParameterValue(10.0));
@@ -114,6 +118,8 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
   node->get_parameter(plugin_name_ + ".use_output_filter", use_output_filter_);
+  node->get_parameter(plugin_name_ + ".use_direct_output", use_direct_output_);
+  node->get_parameter(plugin_name_ + ".steer_smooth_num", steer_smooth_num_);
   node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
   node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
   node->get_parameter(plugin_name_ + ".path_obst_slow_dist", obst_slow_dist_);
@@ -1032,12 +1038,13 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     Q_[2] = Q_max_[2];
     R_[0] = R_min_[0];
   }else{
-    R_[0] = pow(speed.linear.x,2);
+    // R_[0] = std::clamp(pow(abs(speed.linear.x),3),R_min_[0],R_max_[0]);
     // only capable of speed lower than 3.0m/s
-    alpha = (abs(speed.linear.x)-max_bvx_)/(max_fvx_ - max_bvx_);
+    double speed_diff = (abs(speed.linear.x)-max_bvx_)/(max_fvx_ - max_bvx_);
+    alpha = std::clamp(speed_diff,0.0,1.0);
     Q_[0] = (1-alpha)*Q_max_[0] + alpha*Q_min_[0];
     Q_[2] = (1-alpha)*Q_max_[2] + alpha*Q_min_[2];
-    // R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
+    R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
   }
   RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed.linear.x,alpha);
 
@@ -1055,10 +1062,10 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // mean filter to smooth kesi
   if(use_output_filter_ == true){
-    if(kesi_history.size()==4){
+    if(kesi_history.size()==(size_t)steer_smooth_num_){
       kesi_history.erase(kesi_history.begin());
       kesi_history.push_back(control.kesi);
-      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/4;
+      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/static_cast<double>(steer_smooth_num_);
     }else{
       kesi_history.push_back(control.kesi);
     }
@@ -1073,13 +1080,25 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
-    cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
-    cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
-    // RCLCPP_INFO(logger_,"filter on");
+    if(use_direct_output_ == false){
+      cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
+      cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
+      // RCLCPP_INFO(logger_,"filter on");
+    }else{
+      cmd_vel.twist.linear.x = vx;
+      cmd_vel.twist.angular.z = std::clamp(control.kesi,-1.221,1.221);
+      // RCLCPP_INFO(logger_,"filter on, direct output");
+    }
   }else{
+    if(use_direct_output_ == false){
     cmd_vel.twist.linear.x = vx;
     cmd_vel.twist.angular.z = az;
     // RCLCPP_INFO(logger_,"filter off");
+    }else{
+      cmd_vel.twist.linear.x = vx;
+      cmd_vel.twist.angular.z = std::clamp(control.kesi,-1.221,1.221);
+      // RCLCPP_INFO(logger_,"filter off, direct output");
+    }
   }
   
   debug_info.data.push_back(kesi_);
@@ -1321,6 +1340,7 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           R_[1] = parameter.as_double();
         }
       }
+      
       obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
       obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));
@@ -1329,11 +1349,21 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         use_obstacle_stopping_ = parameter.as_bool();
       }else if(name == plugin_name_ + ".use_output_filter"){
         use_output_filter_ = parameter.as_bool();
+      }else if(name == plugin_name_ + ".use_direct_output"){
+        use_direct_output_ = parameter.as_bool();
       }
       // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {
       if(name == plugin_name_ + ".robot_search_pose_dist"){
         robot_search_pose_dist_ = parameter.as_int();
+      }
+      else if(name == plugin_name_ + ".steer_smooth_num"){
+        if(parameter.as_int() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          steer_smooth_num_ = std::abs(parameter.as_int());
+        }else{
+          steer_smooth_num_ = parameter.as_int();
+        }
       }
       RCLCPP_INFO(logger_,"parameter %s changed to %ld",parameter.get_name().c_str(),parameter.as_int());
     } 
