@@ -55,7 +55,9 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.10));
+    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.30));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_linear_accel", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_lateral_accel", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
@@ -113,6 +115,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
   node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
+  node->get_parameter(plugin_name_ + ".min_linear_accel", min_lin_acc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
   node->get_parameter(plugin_name_ + ".max_steer_rate", max_steer_rate_);
@@ -378,7 +381,7 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(
 
   // fill local plan on the back to make curvature smooth
   int count = 0;
-  for (int i=index; i>0;--i) {
+  for (int i=index-1; i>0;--i) {
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
     double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
     if(distance>(costmap_radius - 2 * circumscribed_radius)){
@@ -492,6 +495,7 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   for(size_t i=0;i<points.size()-1;i++){
     if(points[i].x == points[i+1].x && points[i].y == points[i+1].y && points[i+1].yaw == points[i+1].yaw){
       points.erase(points.begin()+i);
+      RCLCPP_INFO(logger_,"Removed duplicated point at index %zu", i);
     }
   }
 }
@@ -760,12 +764,13 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
       max_v_distance = 0;
     }else{
       if(backward_motion == false){
-        max_v_distance = std::max(sqrt(2*min_lin_deacc_*distance_to_goal),(double)v_min);
+        max_v_distance = std::max(sqrt(2*min_lin_deacc_*distance_to_goal),(double)v_min); 
       }else{
         max_v_distance = std::max(sqrt(2*min_lin_deacc_back_*distance_to_goal),(double)v_min);
       }
     }
     max_v_goal_list[i] = clamp(max_v_distance,-max_bvx_,max_fvx_);
+    // RCLCPP_INFO(logger_, "max_v_goal_list[%zu]: %f distance: %lf", i, max_v_goal_list[i],distance_to_goal);
   }
 
   // curvature constraint
@@ -777,7 +782,7 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
   }
   if(!max_v_curvature_list.empty())
   {
-    max_v_curvature_list = optimizeCurveConstraints(wp,max_v_curvature_list,curvature_list,max_lin_acc_,min_lin_deacc_);
+    max_v_curvature_list = optimizeCurveConstraints(wp,max_v_curvature_list,curvature_list,min_lin_acc_,min_lin_deacc_);
   }
 
   // obstacle constraint
@@ -933,6 +938,8 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // no output in the first cycle, only update last control time
   if(dt_>1.0f){
     // RCLCPP_INFO(logger_,"dt over time %lf",dt_);
+    last_cmd_vel_.linear.x = cmd_vel.twist.linear.x = 0;
+    last_cmd_vel_.angular.z = cmd_vel.twist.angular.z = 0;
     return cmd_vel;
   }
     
@@ -1065,7 +1072,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     Q_[2] = (1-alpha)*Q_max_[2] + alpha*Q_min_[2];
     R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
   }
-  RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed_smoothed,alpha);
+  // RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed_smoothed,alpha);
 
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
@@ -1095,7 +1102,13 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   kesi_ = kesi_ + kesi_gain_valid*dt_;
 
-  double vx = clamp(control.v,-max_bvx_,max_fvx_);
+  double vx = control.v;
+  if(vx>=0){
+    vx = clamp(control.v,last_cmd_vel_.linear.x - min_lin_deacc_*dt_,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
+  }else{
+    vx = clamp(control.v,last_cmd_vel_.linear.x - min_lin_deacc_back_*dt_,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
+  }
+  vx = clamp(vx,-max_bvx_,max_fvx_);
   double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
@@ -1215,6 +1228,13 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_lin_acc_ = parameter.as_double();
         }
+      }else if(name == plugin_name_ + ".min_linear_accel"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          min_lin_acc_ = std::abs(parameter.as_double());
+        }else{
+          min_lin_acc_ = parameter.as_double();
+        }
       }
       else if(name == plugin_name_ + ".max_steer_rate"){
         if(parameter.as_double() < 0){
@@ -1252,7 +1272,6 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
-        min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
       }else if(name == plugin_name_ + ".approach_velocity_scaling_dist_back"){
 
         approach_velocity_scaling_dist_back_ = std::abs(parameter.as_double());
@@ -1364,7 +1383,8 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           R_[1] = parameter.as_double();
         }
       }
-      
+      min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
+      min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
       obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
       obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));

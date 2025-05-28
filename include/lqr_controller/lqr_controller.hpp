@@ -217,7 +217,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   bool encounter_obst_moment_logged_; // whether encounter obstacle moment is logged
   double obstacle_timeout_;
   double max_fvx_,max_bvx_,max_wz_;
-  double max_lin_acc_,max_lateral_accel_,max_w_acc_,min_lin_deacc_,min_lin_deacc_back_;
+  double max_lin_acc_,max_lateral_accel_,max_w_acc_,min_lin_deacc_,min_lin_deacc_back_,min_lin_acc_;
   double dead_band_speed_;
   double approach_velocity_scaling_dist_,approach_velocity_scaling_dist_back_;
   bool use_obstacle_stopping_,use_output_filter_,use_direct_output_;
