@@ -1104,12 +1104,12 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   double vx = control.v;
   if(vx>=0){
-    vx = clamp(control.v,last_cmd_vel_.linear.x - min_lin_deacc_*dt_,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
+    vx = clamp(control.v,0.0,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
   }else{
-    vx = clamp(control.v,last_cmd_vel_.linear.x - min_lin_deacc_back_*dt_,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
+     vx = vx/abs(vx) * clamp(abs(control.v),0.0,abs(last_cmd_vel_.linear.x) + max_lin_acc_*dt_);
   }
   vx = clamp(vx,-max_bvx_,max_fvx_);
-  double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
+  double az = clamp(vx*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
     if(use_direct_output_ == false){
@@ -1135,7 +1135,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   
   debug_info.data.push_back(kesi_);
   debug_info.data.push_back(control.v);
-  debug_info.data.push_back(U_r.kesi);
+  debug_info.data.push_back(control.kesi);
   debug_pub_->publish(debug_info);
   last_cmd_vel_.angular.z = az;
   last_cmd_vel_.linear.x = vx;
