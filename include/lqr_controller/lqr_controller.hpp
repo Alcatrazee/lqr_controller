@@ -222,7 +222,6 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double approach_velocity_scaling_dist_,approach_velocity_scaling_dist_back_;
   bool use_obstacle_stopping_,use_output_filter_,use_direct_output_;
   int steer_smooth_num_;
-  double obst_speed_control_k_,obst_speed_control_b_;
   double obst_stop_dist_,obst_slow_dist_;
   double vehicle_L_;
   double inversion_xy_tolerance_;
@@ -232,6 +231,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   int robot_search_pose_dist_;
   double max_steer_rate_;
   geometry_msgs::msg::Twist last_cmd_vel_;
+  double allowed_speed_forward_,allowed_speed_backward_;
 
 
   nav_msgs::msg::Path global_plan_;

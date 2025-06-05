@@ -6,8 +6,8 @@ improvements:
 1. change tracking point to make it a little bit forward      [cancel]
 2. add steering rate control                                  [done] 
 3. 出弯时加速慢点                                                [done]    
-4. smooth velocity 
-5. add velocity constraints
-6. add deacceleration in going back
+4. smooth velocity                                            [done]  
+5. add velocity constraints                                   [done]  
+6. add deacceleration in going back                           [done]  
 7. add Q and R changing relative to curvature and speed
 8. after step 7, make Q and R as topic so that it can be changed via topic(using Bayesian neural network)

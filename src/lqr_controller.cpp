@@ -51,7 +51,11 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_fvx", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_fvx_allowed", rclcpp::ParameterValue(0.50));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_bvx", rclcpp::ParameterValue(0.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_bvx_allowed", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
   declare_parameter_if_not_declared(
@@ -112,7 +116,9 @@ void LqrController::configure(
     node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
 
   node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
+  node->get_parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_);
   node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
+  node->get_parameter(plugin_name_ + ".max_bvx_allowed", allowed_speed_backward_);
   node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
   node->get_parameter(plugin_name_ + ".min_linear_accel", min_lin_acc_);
@@ -143,11 +149,11 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".w_effort_penalty_min", R_min_[0]);
   node->get_parameter(plugin_name_ + ".acc_effort_penalty", R_[1]);
   
-  obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
-  obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
   min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
   min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
   RCLCPP_INFO(logger_,"computed linear deaccleration %lf back: %lf",min_lin_deacc_,min_lin_deacc_back_);
+  allowed_speed_backward_ = max_bvx_;
+  allowed_speed_forward_ = max_fvx_;
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
@@ -756,7 +762,7 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
   { 
     // goal constrain, the closer to the goal, the slower, with square root of 2 times desired deacc and distance
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
-    double max_v_distance = 0;
+    float max_v_distance = 0;
     if(wp[i].x == global_plan_.poses.back().pose.position.x &&
       wp[i].y == global_plan_.poses.back().pose.position.y &&
       wp[i].yaw == get_yaw_from_quaternion(global_plan_.poses.back().pose.orientation))
@@ -769,7 +775,7 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
         max_v_distance = std::max(sqrt(2*min_lin_deacc_back_*distance_to_goal),(double)v_min);
       }
     }
-    max_v_goal_list[i] = clamp(max_v_distance,-max_bvx_,max_fvx_);
+    max_v_goal_list[i] = clamp(max_v_distance,-bv_max,fv_max);
     // RCLCPP_INFO(logger_, "max_v_goal_list[%zu]: %f distance: %lf", i, max_v_goal_list[i],distance_to_goal);
   }
 
@@ -777,8 +783,8 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
   for(size_t i=0;i<wp.size();i++){
     // construct curvature constraint
     double K = curvature_list[i][0];
-    double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
-    max_v_curvature_list[i] = clamp(max_v_curvature,-max_bvx_,max_fvx_);
+    float max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
+    max_v_curvature_list[i] = clamp(max_v_curvature,-bv_max,fv_max);
   }
   if(!max_v_curvature_list.empty())
   {
@@ -999,7 +1005,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   // compute curvature and apply constraints to speed
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<vector<double>> kappa_d_kappa_list = get_kappa_d_kappa(wps);
-  vector<double> sp = get_speed_profile(robot_state_,target_index,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
+  vector<double> sp = get_speed_profile(robot_state_,target_index,allowed_speed_forward_,allowed_speed_backward_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
 
   // interpolate pose for smooth curvature and speed profile
   geometry_msgs::msg::PoseStamped target_pose;
@@ -1064,8 +1070,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     Q_[2] = Q_max_[2];
     R_[0] = R_min_[0];
   }else{
-    // R_[0] = std::clamp(pow(abs(speed.linear.x),3),R_min_[0],R_max_[0]);
-    // only capable of speed lower than 3.0m/s
     double speed_diff = (abs(speed_smoothed)-max_bvx_)/(max_fvx_ - max_bvx_);
     alpha = std::clamp(speed_diff,0.0,1.0);
     Q_[0] = (1-alpha)*Q_max_[0] + alpha*Q_min_[0];
@@ -1108,7 +1112,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   }else{
      vx = vx/abs(vx) * clamp(abs(control.v),0.0,abs(last_cmd_vel_.linear.x) + max_lin_acc_*dt_);
   }
-  vx = clamp(vx,-max_bvx_,max_fvx_);
+  vx = clamp(vx,-allowed_speed_backward_,allowed_speed_forward_);
   double az = clamp(vx*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
@@ -1180,14 +1184,20 @@ void LqrController::setSpeedLimit(
 {
   if (speed_limit == nav2_costmap_2d::NO_SPEED_LIMIT) {
     // Restore default value
-    
+    allowed_speed_backward_ = max_bvx_;
+    allowed_speed_forward_ = max_fvx_;
   } else {
     if (percentage) {
+      allowed_speed_backward_ = max_bvx_ * speed_limit;
+      allowed_speed_forward_ = max_fvx_ * speed_limit;
       // Speed limit is expressed in % from maximum speed of robot
     } else {
+      allowed_speed_forward_ = speed_limit;
       // Speed limit is expressed in absolute value
     }
   }
+  RCLCPP_INFO(logger_, "Speed limit set to: %f (backward), %f (forward)", 
+              allowed_speed_backward_, allowed_speed_forward_);
 }
 
 rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallback(
@@ -1207,12 +1217,26 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_fvx_ = parameter.as_double();
         }
+      }else if(name == plugin_name_ + ".max_fvx_allowed"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          allowed_speed_forward_ = std::abs(parameter.as_double());
+        }else{
+          allowed_speed_forward_ = parameter.as_double();
+        }
       }else if(name == plugin_name_ + ".max_bvx"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_bvx_ = std::abs(parameter.as_double());
         }else{
           max_bvx_ = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".max_bvx_allowed"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          allowed_speed_backward_ = std::abs(parameter.as_double());
+        }else{
+          allowed_speed_backward_ = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".max_wz"){
         if(parameter.as_double() < 0){
@@ -1273,7 +1297,7 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".approach_velocity_scaling_dist_back"){
-
+        
         approach_velocity_scaling_dist_back_ = std::abs(parameter.as_double());
         min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
 
@@ -1385,8 +1409,15 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
       }
       min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
       min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
-      obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
-      obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
+      if(max_fvx_ < allowed_speed_forward_){
+        RCLCPP_INFO(logger_,"max allowed forward speed exceed max fvx, limiting speed to max fvx %f",allowed_speed_forward_);
+        allowed_speed_forward_ = max_fvx_;
+      }
+      if(max_bvx_ < allowed_speed_backward_){
+        RCLCPP_INFO(logger_,"max allowed backward speed exceed max bvx, limiting speed to max fvx %f",allowed_speed_forward_);
+        allowed_speed_backward_ = max_bvx_;
+      }
+
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if(name == plugin_name_ + ".use_obstacle_stopping"){
