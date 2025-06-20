@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
@@ -50,13 +51,17 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_fvx", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_fvx_allowed", rclcpp::ParameterValue(0.50));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_bvx", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
-  // declare_parameter_if_not_declared(
-    // node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.50));
+    node, plugin_name_ + ".max_bvx_allowed", rclcpp::ParameterValue(0.50));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".min_linear_deaccel", rclcpp::ParameterValue(0.10));
+    node, plugin_name_ + ".max_wz", rclcpp::ParameterValue(1.00));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(0.30));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".min_linear_accel", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_lateral_accel", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
@@ -66,7 +71,13 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".approach_velocity_scaling_dist", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".approach_velocity_scaling_dist_back", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_output_filter", rclcpp::ParameterValue(false));  
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".use_direct_output", rclcpp::ParameterValue(false));  
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".steer_smooth_num", rclcpp::ParameterValue(4));  
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_obstacle_stopping", rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
@@ -76,73 +87,92 @@ void LqrController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".path_obst_slow_dist", rclcpp::ParameterValue(2.0));
   declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_steer_rate", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
     node, plugin_name_ + ".vehicle_L", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".robot_search_pose_dist", rclcpp::ParameterValue(10));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".inversion_xy_tolerance", rclcpp::ParameterValue(0.10));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".latteral_err_penalty", rclcpp::ParameterValue(8.0));
+    node, plugin_name_ + ".latteral_err_penalty_max", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".latteral_err_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".latteral_err_dot_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".angle_err_penalty", rclcpp::ParameterValue(1.0));
+    node, plugin_name_ + ".angle_err_penalty_max", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".angle_err_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".angle_err_dot_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".v_err_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".w_effort_penalty", rclcpp::ParameterValue(1.0));
+    node, plugin_name_ + ".w_effort_penalty_max", rclcpp::ParameterValue(7.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".w_effort_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
 
   node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
+  node->get_parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_);
   node->get_parameter(plugin_name_ + ".max_bvx", max_bvx_);
+  node->get_parameter(plugin_name_ + ".max_bvx_allowed", allowed_speed_backward_);
   node->get_parameter(plugin_name_ + ".max_wz", max_wz_);
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_lin_acc_);
-  // node->get_parameter(plugin_name_ + ".min_linear_deaccel", min_lin_deacc_);
+  node->get_parameter(plugin_name_ + ".min_linear_accel", min_lin_acc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
+  node->get_parameter(plugin_name_ + ".max_steer_rate", max_steer_rate_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
+  node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist_back", approach_velocity_scaling_dist_back_);
   node->get_parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_);
   node->get_parameter(plugin_name_ + ".use_output_filter", use_output_filter_);
+  node->get_parameter(plugin_name_ + ".use_direct_output", use_direct_output_);
+  node->get_parameter(plugin_name_ + ".steer_smooth_num", steer_smooth_num_);
   node->get_parameter(plugin_name_ + ".patient_encounter_obst", obstacle_timeout_);
   node->get_parameter(plugin_name_ + ".path_obst_stop_dist", obst_stop_dist_);
   node->get_parameter(plugin_name_ + ".path_obst_slow_dist", obst_slow_dist_);
   node->get_parameter(plugin_name_ + ".vehicle_L", vehicle_L_);
   node->get_parameter(plugin_name_ + ".robot_search_pose_dist", robot_search_pose_dist_);
   node->get_parameter(plugin_name_ + ".inversion_xy_tolerance", inversion_xy_tolerance_);
-  node->get_parameter(plugin_name_ + ".latteral_err_penalty", Q_[0]);
+  node->get_parameter(plugin_name_ + ".latteral_err_penalty_max", Q_max_[0]);
+  node->get_parameter(plugin_name_ + ".latteral_err_penalty_min", Q_min_[0]);
   node->get_parameter(plugin_name_ + ".latteral_err_dot_penalty", Q_[1]);
-  node->get_parameter(plugin_name_ + ".angle_err_penalty", Q_[2]);
+  node->get_parameter(plugin_name_ + ".angle_err_penalty_max", Q_max_[2]);
+  node->get_parameter(plugin_name_ + ".angle_err_penalty_min", Q_min_[2]);
   node->get_parameter(plugin_name_ + ".angle_err_dot_penalty", Q_[3]);
   node->get_parameter(plugin_name_ + ".v_err_penalty", Q_[4]);
-  node->get_parameter(plugin_name_ + ".w_effort_penalty", R_[0]);
+  node->get_parameter(plugin_name_ + ".w_effort_penalty_max", R_max_[0]);
+  node->get_parameter(plugin_name_ + ".w_effort_penalty_min", R_min_[0]);
   node->get_parameter(plugin_name_ + ".acc_effort_penalty", R_[1]);
   
-  obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
-  obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
   min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
-  RCLCPP_INFO(logger_,"computed linear deaccleration %lf",min_lin_deacc_);
-  if(approach_velocity_scaling_dist_!=0)
-    approach_v_gain_ = max_fvx_/approach_velocity_scaling_dist_;
-  else
-    approach_v_gain_ = 1.0;
+  min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
+  RCLCPP_INFO(logger_,"computed linear deaccleration %lf back: %lf",min_lin_deacc_,min_lin_deacc_back_);
+  allowed_speed_backward_ = max_bvx_;
+  allowed_speed_forward_ = max_fvx_;
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
-  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 10);
+  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 1);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
   error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
   debug_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("lqr_debug", 10);
+  
+  rclcpp::QoS set_speed_qos_profile(rclcpp::KeepLast(1));
+  set_speed_qos_profile.best_effort();
+  speed_limit_sub_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "set_speed_limit", set_speed_qos_profile,
+    std::bind(&LqrController::speedLimitCallback, this, std::placeholders::_1));
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
   collision_checker_->setCostmap(costmap_);
   transform_tolerance_ = tf2::durationFromSec(0.5);
-  max_steer_rate_ = 0.5;
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
@@ -179,10 +209,6 @@ void LqrController::activate()
   error_code_pub_->on_activate();
   debug_pub_->on_activate();
   cusp_pub_->on_activate();
-  // Remove these lines if publishers aren't needed
-  
-  // target_arc_pub_->on_activate();
-  
   
   // Add callback for dynamic parameters
   auto node = node_.lock();
@@ -205,13 +231,13 @@ void LqrController::deactivate()
   collision_polygon_pub_->on_deactivate();
   error_code_pub_->on_deactivate();
   debug_pub_->on_deactivate();
-  // target_arc_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
 }
 
 void LqrController::removeDuplicatedPathPoint(nav_msgs::msg::Path & path)
 {
+  auto start_time = std::chrono::high_resolution_clock::now();
   for(size_t i=1;i<path.poses.size();i++){
     if(path.poses[i].pose.position.x == path.poses[i-1].pose.position.x &&
       path.poses[i].pose.position.y == path.poses[i-1].pose.position.y &&
@@ -224,6 +250,9 @@ void LqrController::removeDuplicatedPathPoint(nav_msgs::msg::Path & path)
       RCLCPP_INFO(logger_, "Removed duplicate pose");
     }
   }
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - start_time);
+  RCLCPP_DEBUG(logger_, "Time taken to remove duplicates: %ld nanoseconds", duration.count());
 }
 
 vector<int> LqrController::find_cusp(const nav_msgs::msg::Path & path){
@@ -352,25 +381,19 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   encounter_obst_moment_logged_ = false;
 }
 
-double LqrController::get_yaw(const geometry_msgs::msg::PoseStamped & pose) {
-  tf2::Quaternion q(pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
-  tf2::Matrix3x3 m(q);
-  double roll, pitch, yaw;
-  m.getRPY(roll, pitch, yaw);
-  yaw = fmod(yaw + 3 * M_PI, 2 * M_PI) - M_PI;
-  return yaw;
-}
-
-nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset){
+nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(
+  const geometry_msgs::msg::PoseStamped & robot_pose,int &path_offset)
+{
   nav_msgs::msg::Path local_path;
   local_path.header = global_plan_.header;
+
   double costmap_radius = std::max(costmap_->getSizeInMetersX(),costmap_->getSizeInMetersY())/2;
   const double circumscribed_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
   int index = Find_target_index(robot_pose,path_segment_[current_tracking_path_segment_]);
 
-  // fill local plan on the front
+  // fill local plan on the back to make curvature smooth
   int count = 0;
-  for (int i=index; i>0;--i) {
+  for (int i=index-1; i>0;--i) {
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
     double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
     if(distance>(costmap_radius - 2 * circumscribed_radius)){
@@ -379,19 +402,17 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
       local_path.poses.insert(local_path.poses.begin(),(pose));
       path_offset = i;
       count++;
-      if(count > robot_search_pose_dist_)
+      if(count > robot_search_pose_dist_) {
         break;
+      }
     }
   }
-  // local_path.poses.insert(local_path.poses.begin(),path_segment_[current_tracking_path_segment_].poses[index]);
-  // path_offset = index;
 
-  // fill local 
+  // fill local plan on the front
   for(size_t i=index;i<path_segment_[current_tracking_path_segment_].poses.size();++i){
     auto pose = path_segment_[current_tracking_path_segment_].poses[i];
     double distance = nav2_util::geometry_utils::euclidean_distance(pose,robot_pose);
     if(distance>(costmap_radius - circumscribed_radius)){
-    // if(std::hypot(pose.pose.position.x - robot_pose.pose.position.x, pose.pose.position.y - robot_pose.pose.position.y)>costmap_radius){
       break;
     }else{
       local_path.poses.push_back(pose);
@@ -403,27 +424,26 @@ nav_msgs::msg::Path LqrController::grep_path_in_local_costmap(const geometry_msg
   return local_path;
 }
 
-int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & state, nav_msgs::msg::Path &local_path){
+int LqrController::Find_target_index(
+  const geometry_msgs::msg::PoseStamped & state,
+  nav_msgs::msg::Path &local_path)
+{
   double min = abs(sqrt(pow(state.pose.position.x - local_path.poses[0].pose.position.x, 2) + pow(state.pose.position.y - local_path.poses[0].pose.position.y, 2)));
   int index = 0;
   for (size_t i = 0; i < local_path.poses.size(); i++)
   {
-    double d = abs(sqrt(pow(state.pose.position.x - local_path.poses[i].pose.position.x, 2) + pow(state.pose.position.y - local_path.poses[i].pose.position.y, 2)));
+    double d = euclidean_distance(state,local_path.poses[i]);
     if (d < min)
     {
       min = d;
       index = i;
     }
   }
-
-  //索引到终点前，当（机器人与下一个目标点的距离Lf）小于（当前目标点到下一个目标点距离L)时，索引下一个目标点
+  // check if the next point is closer, if so, move to the next point
   if (((size_t)index + 1) < local_path.poses.size())
   {
-    double current_x = local_path.poses[index].pose.position.x; double current_y = local_path.poses[index].pose.position.y;
-    double next_x = local_path.poses[index + 1].pose.position.x; double next_y = local_path.poses[index + 1].pose.position.y;
-    double L_ = abs(sqrt(pow(next_x - current_x, 2) + pow(next_y - current_y, 2)));
-    double L_1 = abs(sqrt(pow(state.pose.position.x - next_x, 2) + pow(state.pose.position.y - next_y, 2)));
-    //ROS_INFO("L is %f,Lf is %f",L,Lf);
+    double L_1 = euclidean_distance(state,local_path.poses[index + 1]);
+    double L_ = euclidean_distance(local_path.poses[index],local_path.poses[index+1]);
     if (L_1 < L_)
     {
       index += 1;
@@ -435,13 +455,13 @@ int LqrController::Find_target_index(const geometry_msgs::msg::PoseStamped & sta
 vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose)
 {
   vector<double> distance_list;
-  uint32_t path_length = path.poses.size();
   nav_msgs::msg::Path obst_free_path;
+  const double circumscribed_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
+  
   // find obstacle index in path
   int obst_index = -1;
-  const double circumscribed_radius = costmap_ros_->getLayeredCostmap()->getCircumscribedRadius();
-  // RCLCPP_INFO(logger_, "circumscribed_radius radius: %f circum %f ",circumscribed_radius,costmap_ros_->getLayeredCostmap()->getCircumscribedRadius());
-  for(size_t i = 0; i < path_length; i++){
+  
+  for(size_t i = 0; i < path.poses.size(); i++){
     // push back pose
     // check if pose is outside of costmap, if pose is outside of costmap, it will return wrong cost
     double check_pose_distance = nav2_util::geometry_utils::euclidean_distance(path.poses[i],robot_pose) + 2 * circumscribed_radius;
@@ -452,24 +472,23 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
     }
     
     obst_free_path.poses.push_back(path.poses[i]);
-    double yaw = get_yaw(path.poses[i]);
+    double yaw = get_yaw_from_quaternion(path.poses[i].pose.orientation);
     // check ith footprint cost, if cost is equal to lethal, then that is the obstacle
     double footprint_cost = collision_checker_->footprintCostAtPose(path.poses[i].pose.position.x, path.poses[i].pose.position.y, yaw,costmap_ros_->getRobotFootprint());
-    // RCLCPP_INFO(logger_,"cost at %ld is %f",i,footprint_cost);
     if (footprint_cost == static_cast<double>(nav2_costmap_2d::NO_INFORMATION) && costmap_ros_->getLayeredCostmap()->isTrackingUnknown())
     {
       RCLCPP_WARN(logger_, "Footprint cost is unknown, collision check failed");
     }else if(footprint_cost > static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)){
       obst_index = i;
       publish_collision_polygon(path.poses[i]);
-      // RCLCPP_INFO(logger_, "found obstacle in pose (%f,%f) ",obst_free_path.poses.back().pose.position.x, obst_free_path.poses.back().pose.position.y);
       break;
     }
   }
 
   // find cost
+  RCLCPP_DEBUG(logger_, "Obstacle index: %d", obst_index);
   if(obst_index!=-1){
-    for(uint32_t i = 0; i < path_length; i++){
+    for(uint32_t i = 0; i < path.poses.size(); i++){
       double distance = 0;
       if(i<(uint32_t)obst_index){
         distance = nav2_util::geometry_utils::calculate_path_length(obst_free_path, i);
@@ -477,7 +496,7 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
       distance_list.push_back(distance);
     }
   }else{
-    for(uint32_t i = 0; i < path_length; i++){
+    for(uint32_t i = 0; i < path.poses.size(); i++){
       distance_list.push_back(-1);
     }
   }
@@ -488,6 +507,7 @@ void LqrController::remove_duplicated_points(vector<waypoint>& points){
   for(size_t i=0;i<points.size()-1;i++){
     if(points[i].x == points[i+1].x && points[i].y == points[i+1].y && points[i+1].yaw == points[i+1].yaw){
       points.erase(points.begin()+i);
+      RCLCPP_INFO(logger_,"Removed duplicated point at index %zu", i);
     }
   }
 }
@@ -535,14 +555,6 @@ void LqrController::internalForwardOptimize(vector<double>& speeds, const vector
         double distance = distances[i];
         double v_max = sqrt(v_next * v_next + 2 * deacc_max * distance);
         speeds[i] = min(speeds[i], v_max);
-
-        // // 如果当前点与前一个点的加速度已经在范围内，则停止优化
-        // if (i > end_index) {
-        //     double acc = (speeds[i] - speeds[i - 1]) / distances[i - 1];
-        //     if (abs(acc) <= deacc_max) {
-        //         break;
-        //     }
-        // }
     }
 }
 
@@ -554,14 +566,6 @@ void LqrController::internalBackwardOptimize(vector<double>& speeds, const vecto
         double distance = distances[i - 1];
         double v_max = sqrt(v_prev * v_prev + 2 * acc_max * distance);
         speeds[i] = min(speeds[i], v_max);
-
-        // // 如果当前点与后一个点的减速度已经在范围内，则停止优化
-        // if (i < end_index) {
-        //     double deacc = (speeds[i] - speeds[i + 1]) / distances[i];
-        //     if (abs(deacc) <= acc_max) {
-        //         break;
-        //     }
-        // }
     }
 }
 
@@ -680,23 +684,8 @@ void LqrController::publish_collision_polygon(const geometry_msgs::msg::PoseStam
   collision_polygon_pub_->publish(collision_polygon);
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState state,
-                          float fv_max,
-                          float bv_max,
-                          float v_min,
-                          float max_lateral_accel,
-                          vector<waypoint>& wp,
-                          vector<vector<double>>& curvature_list,
-                          vector<double> &distance_to_obst,
-                          int path_offset){
-  vector<double> sp(wp.size());
-  vector<double> max_v_curvature_list(wp.size());
-  vector<double> max_v_goal_list(wp.size());
-  vector<double> max_v_obstacle_list(wp.size());
-  // cout << "size:" <<  curvature_list.size() << endl;
+bool LqrController::determin_backward(vehicleState &state,vector<waypoint>& wp){
   bool backward_motion = false;
-  // get next point on from or back
-    
   Matrix4x4 T_map_pn,T_map_pnp1;
   float next_dir = 0;
   if(wp.size()>1){
@@ -723,61 +712,99 @@ vector<double> LqrController::get_speed_profile(vehicleState state,
   if(next_dir < -M_PI_2 || next_dir > M_PI_2){
     backward_motion = true;
   }
+  return backward_motion;
+}
 
+vector<double> LqrController::optimizeCurveConstraints(
+  const vector<waypoint>& wp,
+  vector<double>& max_v_curvature_list,
+   vector<vector<double>>& curvature_list,
+  double max_lin_acc_,
+  double min_lin_deacc_)
+{
+  vector<int> index_set;
+  vector<vector<int>> curve_index_list = find_curve(curvature_list, 0.1);
+
+  if (!curve_index_list.empty()) {
+    for (const auto& curve_index : curve_index_list) {
+      index_set.push_back(findMinAbsIndex(max_v_curvature_list, curve_index));
+    }
+
+    vector<double> distance_list;
+    for (size_t i = 1; i < wp.size(); i++) {
+      distance_list.push_back(hypot(wp[i].x - wp[i - 1].x, wp[i].y - wp[i - 1].y));
+    }
+
+    if (!index_set.empty()) {
+      optimizeCurveInternalSpeeds(max_v_curvature_list, distance_list, max_lin_acc_, min_lin_deacc_, curve_index_list, index_set);
+      optimizeCurveSpeeds(max_v_curvature_list, distance_list, max_lin_acc_, min_lin_deacc_, curve_index_list);
+    }
+  }
+
+  return max_v_curvature_list;
+}
+
+vector<double> LqrController::get_speed_profile(vehicleState &state,
+                          int /*tracking_index*/,
+                          float fv_max,
+                          float bv_max,
+                          float v_min,
+                          float max_lateral_accel,
+                          vector<waypoint>& wp,
+                          vector<vector<double>>& curvature_list,
+                          vector<double> &distance_to_obst,
+                          int path_offset){
+  vector<double> sp(wp.size());
+  vector<double> max_v_curvature_list(wp.size());
+  vector<double> max_v_goal_list(wp.size());
+  vector<double> max_v_obstacle_list(wp.size());
+  // vector<double> max_v_current_list(wp.size());   // acceleration constraint
+ 
+  // get next point on from or backward direction
+  bool backward_motion = determin_backward(state,wp);
   
+  // goal constraint
   for (size_t i = 0; i < wp.size(); i++)
-  {
-    // curvature constraint
-    double K = curvature_list[i][0];
-    double max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
-    
-    // goal constrain 
+  { 
+    // goal constrain, the closer to the goal, the slower, with square root of 2 times desired deacc and distance
     double distance_to_goal = nav2_util::geometry_utils::calculate_path_length(path_segment_[current_tracking_path_segment_],i+path_offset);
-    double max_v_distance = std::max(sqrt(2*min_lin_deacc_*distance_to_goal),(double)v_min);
+    float max_v_distance = 0;
     if(wp[i].x == global_plan_.poses.back().pose.position.x &&
       wp[i].y == global_plan_.poses.back().pose.position.y &&
-      wp[i].yaw == get_yaw(global_plan_.poses.back()))
+      wp[i].yaw == get_yaw_from_quaternion(global_plan_.poses.back().pose.orientation))
     {
       max_v_distance = 0;
+    }else{
+      if(backward_motion == false){
+        max_v_distance = std::max(sqrt(2*min_lin_deacc_*distance_to_goal),(double)v_min); 
+      }else{
+        max_v_distance = std::max(sqrt(2*min_lin_deacc_back_*distance_to_goal),(double)v_min);
+      }
     }
-
-    // apply constraints
-    max_v_curvature_list[i] = clamp(max_v_curvature,-max_bvx_,max_fvx_);
-    max_v_goal_list[i] = clamp(max_v_distance,-max_bvx_,max_fvx_);
+    max_v_goal_list[i] = clamp(max_v_distance,-bv_max,fv_max);
+    // RCLCPP_INFO(logger_, "max_v_goal_list[%zu]: %f distance: %lf", i, max_v_goal_list[i],distance_to_goal);
   }
 
-  vector<int> index_set;
-  vector<vector<int>> curve_index_list = find_curve(curvature_list,0.1);
-  if(curve_index_list.size() != 0){
-    // cout << "there are " << curve_index_list.size() << " curves found" << endl;
-    for(auto curve_index:curve_index_list){
-      // cout << "curve begin at " << curve_index.front() << " end at " << curve_index.back()  << endl;
-      index_set.push_back(findMinAbsIndex(max_v_curvature_list,curve_index));
-    }
-    // for(auto index:index_set)
-    //   cout << index << " ";
-    // cout << endl;
-    vector<double> distance_list;
-    for(size_t i=1;i<wp.size();i++){
-      distance_list.push_back(hypot(wp[i].x-wp[i-1].x,wp[i].y-wp[i-1].y));
-    }
-    vector<double> max_v_curvature_list_copy = max_v_curvature_list;
-    
-    if(index_set.size() != 0){
-      optimizeCurveInternalSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list,index_set);
-      optimizeCurveSpeeds(max_v_curvature_list,distance_list,max_lin_acc_,min_lin_deacc_,curve_index_list);
-    }
+  // curvature constraint
+  for(size_t i=0;i<wp.size();i++){
+    // construct curvature constraint
+    double K = curvature_list[i][0];
+    float max_v_curvature = std::sqrt(max_lateral_accel / std::abs(K));
+    max_v_curvature_list[i] = clamp(max_v_curvature,-bv_max,fv_max);
+  }
+  if(!max_v_curvature_list.empty())
+  {
+    max_v_curvature_list = optimizeCurveConstraints(wp,max_v_curvature_list,curvature_list,min_lin_acc_,min_lin_deacc_);
   }
 
-  // get obstacle affected speed list
+  // obstacle constraint
+  // if obstacle in path is in slow region, slow down, if it is in stop region, stop
   for (size_t i = 0; i < wp.size(); i++){
-    // obstacle constraint
-    double max_v_obst = fv_max;
+    double max_v_obst = backward_motion?bv_max:fv_max;
     if(use_obstacle_stopping_ == true){
       if(distance_to_obst[i] < obst_stop_dist_ && distance_to_obst[i]>0){
         max_v_obst = 0;
       }else if(distance_to_obst[i] < obst_slow_dist_ && distance_to_obst[i] > obst_stop_dist_){
-        // max_v_obst = obst_speed_control_k_*distance_to_obst[i]+obst_speed_control_b_;
         max_v_obst = sqrt(2*min_lin_deacc_*(distance_to_obst[i] - obst_stop_dist_));
       }
     }
@@ -846,12 +873,9 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
       }
       // RCLCPP_INFO(logger_,"%ld %ld",i,wp.size());
     }
-    // kappa_rate_list[0] = 
-
     for(size_t i=0; i<wp.size(); i++){
       kappa_d_kappa.push_back({kappa_list[i],kappa_rate_list[i]});
     }
-
   }
   else{  // TODO: add kappa list when wp is less than 3
     for(size_t i=0;i<wp.size();i++)
@@ -913,15 +937,25 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   std_msgs::msg::UInt64MultiArray ErrCode;
 
   geometry_msgs::msg::TwistStamped cmd_vel;
+  cmd_vel.header.stamp = clock_->now();
 
   static vector<double> kesi_history;
+  static vector<double> speed_history;
 
-  // if(global_plan_.poses.size()==0){
-  //   throw nav2_core::PlannerException("path list is empty, please check planner."); 
-  // }
   static double last_control_time = rclcpp::Clock().now().seconds();
   double now = rclcpp::Clock().now().seconds();
   dt_ = now - last_control_time;
+
+  last_control_time = now;
+  // no output in the first cycle, only update last control time
+  if(dt_>1.0f){
+    // RCLCPP_INFO(logger_,"dt over time %lf",dt_);
+    last_cmd_vel_.linear.x = cmd_vel.twist.linear.x = 0;
+    last_cmd_vel_.angular.z = cmd_vel.twist.angular.z = 0;
+    return cmd_vel;
+  }
+    
+    
   // get robot coordinate in map frame, due to the argument pose is in odom frame
   geometry_msgs::msg::PoseStamped global_pose;
   transformPose(global_plan_.header.frame_id,pose,global_pose);
@@ -930,18 +964,20 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   geometry_msgs::msg::Twist vel_tolerance;
   goal_checker->getTolerances(pose_tolerance, vel_tolerance);
 
+  // check cusp distance and switch current cusp
   double dist_to_cusp_point = nav2_util::geometry_utils::euclidean_distance(global_pose,path_segment_[current_tracking_path_segment_].poses.back());
-  
+
   if(dist_to_cusp_point<inversion_xy_tolerance_ && (size_t)current_tracking_path_segment_<path_segment_.size()-1){
     current_tracking_path_segment_++;
   }
+
   geometry_msgs::msg::PointStamped cusp_point;
   cusp_point.point.x = path_segment_[current_tracking_path_segment_].poses.back().pose.position.x;
   cusp_point.point.y = path_segment_[current_tracking_path_segment_].poses.back().pose.position.y;
   cusp_point.header.stamp = clock_->now();
   cusp_point.header.frame_id = path_segment_[current_tracking_path_segment_].header.frame_id;
   cusp_pub_->publish(cusp_point);
-  // 
+  
   int path_offset = 0;
   nav_msgs::msg::Path local_plan = grep_path_in_local_costmap(global_pose,path_offset);
   // RCLCPP_INFO(logger_,"local plan size:%ld  cropped local path size: %ld",path_segment_[current_tracking_path_segment_].poses.size(),local_plan.poses.size());
@@ -954,7 +990,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   // prepare lqr controller 
   std::vector<waypoint> wps;
-  robot_state_ = vehicleState{global_pose.pose.position.x,global_pose.pose.position.y,get_yaw(global_pose), speed.linear.x,kesi_};
+  robot_state_ = vehicleState{global_pose.pose.position.x,global_pose.pose.position.y,get_yaw_from_quaternion(global_pose.pose.orientation), speed.linear.x,kesi_};
 
   // get target point to track and publish 
   int target_index = Find_target_index(global_pose,local_plan);
@@ -965,41 +1001,38 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     wp.ID = i;
     wp.x = local_plan.poses[i].pose.position.x;
     wp.y = local_plan.poses[i].pose.position.y;
-    wp.yaw = get_yaw(local_plan.poses[i]);
+    wp.yaw = get_yaw_from_quaternion(local_plan.poses[i].pose.orientation);
     wps.push_back(wp);
   }
   // remove duplicated points to ensure cusp can be identified correctly
   // TODO: do it in set plan callback
   remove_duplicated_points(wps);
 
-
   // compute curvature and apply constraints to speed
   vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
   vector<vector<double>> kappa_d_kappa_list = get_kappa_d_kappa(wps);
-  vector<double> sp = get_speed_profile(robot_state_,max_fvx_,max_bvx_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
+  vector<double> sp = get_speed_profile(robot_state_,target_index,allowed_speed_forward_,allowed_speed_backward_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
 
-
-  // interpolate pose for smooth curvature
+  // interpolate pose for smooth curvature and speed profile
   geometry_msgs::msg::PoseStamped target_pose;
   double ref_velocity = sp[target_index];
   double K = kappa_d_kappa_list[target_index][0];
   if(target_index!=0){
+    // get speed profile and kappa to interpolate 
     vector<double> sp_interp({sp[target_index-1],sp[target_index]});
     vector<double> kappa_interp({kappa_d_kappa_list[target_index-1][0],kappa_d_kappa_list[target_index][0]});
     target_pose = interpolate_pose(global_pose,local_plan.poses[target_index-1],local_plan.poses[target_index],sp_interp,ref_velocity,kappa_interp,K);
-    // RCLCPP_INFO(logger_,"target_pose x %f %f",target_pose.pose.position.x,target_pose.pose.position.y);
   }else{
     target_pose.pose = local_plan.poses[0].pose;
   }
-
-  // RCLCPP_INFO(logger_,"target index %d",target_index);
+  // publish tracking pose
   target_pose.header.stamp = rclcpp::Time();
-  target_pose.header.frame_id = "map";
+  target_pose.header.frame_id = global_plan_.header.frame_id;
   target_pub_->publish(target_pose);
 
-  waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw(target_pose)});//wps[target_index];
+  waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw_from_quaternion(target_pose.pose.orientation)});//wps[target_index];
 
-  // check obstacle
+  // check obstacle encounter moment(if not logged) and compute stopped duration
   if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
     RCLCPP_ERROR(logger_,"obstacle too close, stop!");
     ErrCode.data.push_back(100006);
@@ -1007,9 +1040,9 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
       encounter_obst_moment_logged_ = true;
       encounter_obst_moment_ = clock_->now().seconds();
     }else{
-      double dt = clock_->now().seconds() - encounter_obst_moment_;
-      RCLCPP_INFO(logger_,"obstacle dt: %lf",dt);
-      if(dt>obstacle_timeout_){
+      double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
+      RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
+      if(dt_obst>obstacle_timeout_){
         throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
       }
     }
@@ -1021,21 +1054,38 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     encounter_obst_moment_logged_ = false;
   }
 
-
-
-  // if(target_index!=0){
-  //   K = lerp(kappa_d_kappa_list[target_index][0],kappa_d_kappa_list[target_index-1][0],(double)target_index/(double)wps.size());
-  // }
+  // set reference input
   double kesi = atan2(vehicle_L_ * K, 1);   // reference steer angle
 
-  // reference input
   U U_r;
-  U_r.v = ref_velocity; //sp[target_index];   // apply reference speed
+  U_r.v = ref_velocity; 
   U_r.kesi = kesi*(U_r.v>=0?1:-1);
+
+  // initialize lqr controller parameters
+  float speed_smoothed = 0.0;
+  if(speed_history.size()==(size_t)steer_smooth_num_){
+    speed_history.erase(speed_history.begin());
+    speed_history.push_back(speed.linear.x);
+    speed_smoothed = std::accumulate(speed_history.begin(),speed_history.end(),0.0)/static_cast<double>(steer_smooth_num_);
+  }else{
+    speed_history.push_back(speed.linear.x);
+  }
+  double alpha = 0;
+  if(abs(speed_smoothed)<max_bvx_){
+    Q_[0] = Q_max_[0];
+    Q_[2] = Q_max_[2];
+    R_[0] = R_min_[0];
+  }else{
+    double speed_diff = (abs(speed_smoothed)-max_bvx_)/(max_fvx_ - max_bvx_);
+    alpha = std::clamp(speed_diff,0.0,1.0);
+    Q_[0] = (1-alpha)*Q_max_[0] + alpha*Q_min_[0];
+    Q_[2] = (1-alpha)*Q_max_[2] + alpha*Q_min_[2];
+    R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
+  }
+  // RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed_smoothed,alpha);
 
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
 
-  // std::cout << "compute u" << std::endl;
   Matrix5x1 state;
   U control = lqr_controller_->cal_vel(state);//计算输入[v, kesi]
   std_msgs::msg::Float32MultiArray debug_info;
@@ -1044,21 +1094,14 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     debug_info.data.push_back(state(i));
   }
   
-  // std::cout << "u completed" << std::endl;
-  if(U_r.v==0)control.v = 0;
-
-  // if(abs(control.kesi - kesi_)/dt_ > max_steer_rate_){
-  //   RCLCPP_WARN(logger_,"steer rate exceed limit, adjusting kesi, original %f steer rate %f  target %f",kesi_,abs(control.kesi - kesi_)/dt_,control.kesi);
-  //   control.kesi = kesi_ + max_steer_rate_* (control.kesi - kesi_)/abs(control.kesi - kesi_) * dt_;
-  //   RCLCPP_INFO(logger_,"adjusted kesi: %f",control.kesi);
-  // }
+  if(U_r.v==0)control.v = 0;    // to avoid non zero speed output after optimization
 
   // mean filter to smooth kesi
   if(use_output_filter_ == true){
-    if(kesi_history.size()==4){
+    if(kesi_history.size()==(size_t)steer_smooth_num_){
       kesi_history.erase(kesi_history.begin());
       kesi_history.push_back(control.kesi);
-      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/4;
+      control.kesi = std::accumulate(kesi_history.begin(),kesi_history.end(),0.0)/static_cast<double>(steer_smooth_num_);
     }else{
       kesi_history.push_back(control.kesi);
     }
@@ -1069,26 +1112,45 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
 
   kesi_ = kesi_ + kesi_gain_valid*dt_;
 
-  double vx = clamp(control.v,-max_bvx_,max_fvx_);
-  double az = clamp(control.v*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
+  double vx = control.v;
+  if(vx>=0){
+    vx = clamp(control.v,0.0,last_cmd_vel_.linear.x + max_lin_acc_*dt_);
+  }else{
+     vx = vx/abs(vx) * clamp(abs(control.v),0.0,abs(last_cmd_vel_.linear.x) + max_lin_acc_*dt_);
+  }
+  vx = clamp(vx,-allowed_speed_backward_,allowed_speed_forward_);
+  double az = clamp(vx*tan(control.kesi)/vehicle_L_,-max_wz_,max_wz_);
 
   if(use_output_filter_ == true){
-    cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
-    cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
-    // RCLCPP_INFO(logger_,"filter on");
+    if(use_direct_output_ == false){
+      cmd_vel.twist.linear.x = vx*0.5 + last_cmd_vel_.linear.x*0.5;
+      cmd_vel.twist.angular.z = az*0.5 + last_cmd_vel_.angular.z*0.5;
+      // RCLCPP_INFO(logger_,"filter on");
+    }else{
+      cmd_vel.twist.linear.x = vx;
+      cmd_vel.twist.angular.z = std::clamp(control.kesi,-1.221,1.221);
+      // RCLCPP_INFO(logger_,"filter on, direct output");
+    }
   }else{
+    if(use_direct_output_ == false){
     cmd_vel.twist.linear.x = vx;
     cmd_vel.twist.angular.z = az;
     // RCLCPP_INFO(logger_,"filter off");
+    }else{
+      cmd_vel.twist.linear.x = vx;
+      cmd_vel.twist.angular.z = std::clamp(control.kesi,-1.221,1.221);
+      // RCLCPP_INFO(logger_,"filter off, direct output");
+    }
   }
   
   debug_info.data.push_back(kesi_);
   debug_info.data.push_back(control.v);
-  debug_info.data.push_back(U_r.kesi);
+  debug_info.data.push_back(control.kesi);
   debug_pub_->publish(debug_info);
   last_cmd_vel_.angular.z = az;
   last_cmd_vel_.linear.x = vx;
 
+  // check if robot has reached the goal
   if((size_t)current_tracking_path_segment_ == path_segment_.size()-1){
     double dist_to_goal = nav2_util::geometry_utils::euclidean_distance(global_pose,global_plan_.poses.back());
     // RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
@@ -1099,7 +1161,6 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     }
   }
 
-  last_control_time = now;
   error_code_pub_->publish(ErrCode);
   return cmd_vel;
 }
@@ -1123,20 +1184,60 @@ double LqrController::costAtPose(const double & x, const double & y)
   return static_cast<double>(cost);
 }
 
+// set speed limit via topic
+void LqrController::speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg){
+  // message must contain two values: forward and backward speed limits
+  // validate message size, only size is two is allowed
+  if(msg->data.size() != 2) {
+    RCLCPP_WARN(logger_, "Received speed limit message with insufficient data. Expected at least 2 values.");
+    return;
+  }else{
+    RCLCPP_INFO(logger_, "Received speed limit message with %zu values. Forward speed limit %f, backward speed limit %f",
+             msg->data.size(), msg->data[0], msg->data[1]);
+
+    // validate positive values, if negative values are received, use absolute values instead
+    if(msg->data[0] < 0 || msg->data[1] < 0) {
+      RCLCPP_WARN(logger_, "Received negative speed limit values. Using absolute values instead.");
+    }
+    // validate forward speed limit, only allowed in [0,max_fvx] range
+    if(abs(msg->data[0])>max_fvx_){
+      RCLCPP_WARN(logger_, "Received forward speed limit %f exceeds maximum forward speed %f, clamping to max_fvx", 
+                  msg->data[0], max_fvx_);
+      allowed_speed_forward_ = max_fvx_;
+    }else{
+      allowed_speed_forward_ = abs(msg->data[0]);
+    }
+    // validate backward speed limit, only allowed in [0,max_bvx] range
+    if(abs(msg->data[1])>max_bvx_){
+      RCLCPP_WARN(logger_, "Received backward speed limit %f exceeds maximum backward speed %f, clamping to max_bvx", 
+                  msg->data[1], max_bvx_);
+      allowed_speed_backward_ = max_bvx_;
+    }else{
+      allowed_speed_backward_ = abs(msg->data[1]);
+    }
+  }
+}
+
 void LqrController::setSpeedLimit(
   const double & speed_limit,
   const bool & percentage)
 {
   if (speed_limit == nav2_costmap_2d::NO_SPEED_LIMIT) {
     // Restore default value
-    
+    allowed_speed_backward_ = max_bvx_;
+    allowed_speed_forward_ = max_fvx_;
   } else {
     if (percentage) {
+      allowed_speed_backward_ = max_bvx_ * speed_limit;
+      allowed_speed_forward_ = max_fvx_ * speed_limit;
       // Speed limit is expressed in % from maximum speed of robot
     } else {
+      allowed_speed_forward_ = speed_limit;
       // Speed limit is expressed in absolute value
     }
   }
+  RCLCPP_INFO(logger_, "Speed limit set to: %f (backward), %f (forward)", 
+              allowed_speed_backward_, allowed_speed_forward_);
 }
 
 rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallback(
@@ -1156,12 +1257,26 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_fvx_ = parameter.as_double();
         }
+      }else if(name == plugin_name_ + ".max_fvx_allowed"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          allowed_speed_forward_ = std::abs(parameter.as_double());
+        }else{
+          allowed_speed_forward_ = parameter.as_double();
+        }
       }else if(name == plugin_name_ + ".max_bvx"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
           max_bvx_ = std::abs(parameter.as_double());
         }else{
           max_bvx_ = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".max_bvx_allowed"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          allowed_speed_backward_ = std::abs(parameter.as_double());
+        }else{
+          allowed_speed_backward_ = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".max_wz"){
         if(parameter.as_double() < 0){
@@ -1177,15 +1292,22 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           max_lin_acc_ = parameter.as_double();
         }
+      }else if(name == plugin_name_ + ".min_linear_accel"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          min_lin_acc_ = std::abs(parameter.as_double());
+        }else{
+          min_lin_acc_ = parameter.as_double();
+        }
       }
-      // else if(name == plugin_name_ + ".min_linear_deaccel"){
-      //   if(parameter.as_double() < 0){
-      //     RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-      //     min_lin_deacc_ = std::abs(parameter.as_double());
-      //   }else{
-      //     min_lin_deacc_ = parameter.as_double();
-      //   }
-      // }
+      else if(name == plugin_name_ + ".max_steer_rate"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          max_steer_rate_ = std::abs(parameter.as_double());
+        }else{
+          max_steer_rate_ = parameter.as_double();
+        }
+      }
       else if(name == plugin_name_ + ".max_lateral_accel"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
@@ -1214,7 +1336,11 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           approach_velocity_scaling_dist_ = parameter.as_double();
         }
-        min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
+      }else if(name == plugin_name_ + ".approach_velocity_scaling_dist_back"){
+        
+        approach_velocity_scaling_dist_back_ = std::abs(parameter.as_double());
+        min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
+
       }else if(name == plugin_name_ + ".patient_encounter_obst"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
@@ -1250,12 +1376,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           inversion_xy_tolerance_ = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".latteral_err_penalty"){
+      }else if(name == plugin_name_ + ".latteral_err_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          Q_[0] = std::abs(parameter.as_double());
+          Q_max_[0] = std::abs(parameter.as_double());
         }else{
-          Q_[0] = parameter.as_double();
+          Q_max_[0] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".latteral_err_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          Q_min_[0] = std::abs(parameter.as_double());
+        }else{
+          Q_min_[0] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".latteral_err_dot_penalty"){
         if(parameter.as_double() < 0){
@@ -1264,12 +1397,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           Q_[1] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".angle_err_penalty"){
+      }else if(name == plugin_name_ + ".angle_err_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          Q_[2] = std::abs(parameter.as_double());
+          Q_max_[2] = std::abs(parameter.as_double());
         }else{
-          Q_[2] = parameter.as_double();
+          Q_max_[2] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".angle_err_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          Q_min_[2] = std::abs(parameter.as_double());
+        }else{
+          Q_min_[2] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".angle_err_dot_penalty"){
         if(parameter.as_double() < 0){
@@ -1285,12 +1425,19 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }else{
           Q_[4] = parameter.as_double();
         }
-      }else if(name == plugin_name_ + ".w_effort_penalty"){
+      }else if(name == plugin_name_ + ".w_effort_penalty_max"){
         if(parameter.as_double() < 0){
           RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
-          R_[0] = std::abs(parameter.as_double());
+          R_max_[0] = std::abs(parameter.as_double());
         }else{
-          R_[0] = parameter.as_double();
+          R_max_[0] = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".w_effort_penalty_min"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          R_min_[0] = std::abs(parameter.as_double());
+        }else{
+          R_min_[0] = parameter.as_double();
         }
       }else if(name == plugin_name_ + ".acc_effort_penalty"){
         if(parameter.as_double() < 0){
@@ -1300,19 +1447,38 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           R_[1] = parameter.as_double();
         }
       }
-      obst_speed_control_k_ = (max_fvx_ - dead_band_speed_)/(obst_slow_dist_ - obst_stop_dist_);
-      obst_speed_control_b_ = max_fvx_ - obst_speed_control_k_*obst_slow_dist_;
+      min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
+      min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
+      if(max_fvx_ < allowed_speed_forward_){
+        RCLCPP_INFO(logger_,"max allowed forward speed exceed max fvx, limiting speed to max fvx %f",allowed_speed_forward_);
+        allowed_speed_forward_ = max_fvx_;
+      }
+      if(max_bvx_ < allowed_speed_backward_){
+        RCLCPP_INFO(logger_,"max allowed backward speed exceed max bvx, limiting speed to max fvx %f",allowed_speed_forward_);
+        allowed_speed_backward_ = max_bvx_;
+      }
+
       RCLCPP_INFO(logger_,"parameter %s changed to %f",parameter.get_name().c_str(),abs(parameter.as_double()));
     } else if (type == ParameterType::PARAMETER_BOOL) {
       if(name == plugin_name_ + ".use_obstacle_stopping"){
         use_obstacle_stopping_ = parameter.as_bool();
       }else if(name == plugin_name_ + ".use_output_filter"){
         use_output_filter_ = parameter.as_bool();
+      }else if(name == plugin_name_ + ".use_direct_output"){
+        use_direct_output_ = parameter.as_bool();
       }
       // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {
       if(name == plugin_name_ + ".robot_search_pose_dist"){
-        use_obstacle_stopping_ = parameter.as_int();
+        robot_search_pose_dist_ = parameter.as_int();
+      }
+      else if(name == plugin_name_ + ".steer_smooth_num"){
+        if(parameter.as_int() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          steer_smooth_num_ = std::abs(parameter.as_int());
+        }else{
+          steer_smooth_num_ = parameter.as_int();
+        }
       }
       RCLCPP_INFO(logger_,"parameter %s changed to %ld",parameter.get_name().c_str(),parameter.as_int());
     } 
