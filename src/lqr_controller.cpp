@@ -162,6 +162,12 @@ void LqrController::configure(
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
   error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
   debug_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("lqr_debug", 10);
+  
+  rclcpp::QoS set_speed_qos_profile(rclcpp::KeepLast(1));
+  set_speed_qos_profile.best_effort();
+  speed_limit_sub_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "set_speed_limit", set_speed_qos_profile,
+    std::bind(&LqrController::speedLimitCallback, this, std::placeholders::_1));
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -1176,6 +1182,40 @@ double LqrController::costAtPose(const double & x, const double & y)
 
   unsigned char cost = costmap_->getCost(mx, my);
   return static_cast<double>(cost);
+}
+
+// set speed limit via topic
+void LqrController::speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg){
+  // message must contain two values: forward and backward speed limits
+  // validate message size, only size is two is allowed
+  if(msg->data.size() != 2) {
+    RCLCPP_WARN(logger_, "Received speed limit message with insufficient data. Expected at least 2 values.");
+    return;
+  }else{
+    RCLCPP_INFO(logger_, "Received speed limit message with %zu values. Forward speed limit %f, backward speed limit %f",
+             msg->data.size(), msg->data[0], msg->data[1]);
+
+    // validate positive values, if negative values are received, use absolute values instead
+    if(msg->data[0] < 0 || msg->data[1] < 0) {
+      RCLCPP_WARN(logger_, "Received negative speed limit values. Using absolute values instead.");
+    }
+    // validate forward speed limit, only allowed in [0,max_fvx] range
+    if(abs(msg->data[0])>max_fvx_){
+      RCLCPP_WARN(logger_, "Received forward speed limit %f exceeds maximum forward speed %f, clamping to max_fvx", 
+                  msg->data[0], max_fvx_);
+      allowed_speed_forward_ = max_fvx_;
+    }else{
+      allowed_speed_forward_ = abs(msg->data[0]);
+    }
+    // validate backward speed limit, only allowed in [0,max_bvx] range
+    if(abs(msg->data[1])>max_bvx_){
+      RCLCPP_WARN(logger_, "Received backward speed limit %f exceeds maximum backward speed %f, clamping to max_bvx", 
+                  msg->data[1], max_bvx_);
+      allowed_speed_backward_ = max_bvx_;
+    }else{
+      allowed_speed_backward_ = abs(msg->data[1]);
+    }
+  }
 }
 
 void LqrController::setSpeedLimit(
