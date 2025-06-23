@@ -40,7 +40,7 @@ set(dependencies
 set(library_name lqr_controller)
 
 add_library(${library_name} SHARED
-        src/lqr_controller.cpp src/Tool.cpp src/LQR.cpp)
+        src/lqr_controller.cpp src/Tool.cpp src/LQR.cpp src/bezier_curve_generator.cpp)
 
 ament_target_dependencies(${library_name}
   ${dependencies}

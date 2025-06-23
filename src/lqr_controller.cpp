@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <angles/angles.h>
 #include <geometry_msgs/msg/polygon_stamped.hpp>
+#include <lqr_controller/bezier_curve_generator.hpp>
 
 using nav2_util::declare_parameter_if_not_declared;
 using nav2_util::geometry_utils::euclidean_distance;
@@ -114,6 +115,8 @@ void LqrController::configure(
     node, plugin_name_ + ".w_effort_penalty_min", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".auto_determin_local_plan", rclcpp::ParameterValue(true));
 
   node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
   node->get_parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_);
@@ -125,6 +128,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
   node->get_parameter(plugin_name_ + ".max_steer_rate", max_steer_rate_);
+  node->get_parameter(plugin_name_ + ".auto_determin_local_plan",auto_determin_local_plan_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist", approach_velocity_scaling_dist_);
   node->get_parameter(plugin_name_ + ".approach_velocity_scaling_dist_back", approach_velocity_scaling_dist_back_);
@@ -155,7 +159,7 @@ void LqrController::configure(
   allowed_speed_backward_ = max_bvx_;
   allowed_speed_forward_ = max_fvx_;
 
-  global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
+  global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("global_plan", 1);
   lqr_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("lqr_path", 1);
   target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("tracking_target", 1);
   cusp_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("cusp", 10);
@@ -356,6 +360,68 @@ std::vector<geometry_msgs::msg::PoseStamped> LqrController::resample_path(const 
   return resampled_poses;
 }
 
+nav_msgs::msg::Path LqrController::getCompleteLocalPlan(
+  vector<vector<double>> vec_path,
+  geometry_msgs::msg::PoseStamped start,
+  geometry_msgs::msg::PoseStamped goal,
+  bool backward){
+  nav_msgs::msg::Path path;
+
+  size_t counter = 0;
+  for(auto point : vec_path){
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header.frame_id = start.header.frame_id;
+      pose.header.stamp = rclcpp::Clock().now();
+      pose.pose.position.x = point[0];
+      pose.pose.position.y = point[1];
+      if(counter == 0){
+          pose.pose.orientation = start.pose.orientation;
+      }else if(counter == vec_path.size()-1){
+          pose.pose.orientation = goal.pose.orientation;
+      }else{
+          double yaw  = 0;
+          if(backward == true)
+              yaw = atan2(vec_path[counter][1]-vec_path[counter-1][1],vec_path[counter][0]-vec_path[counter-1][0]);
+          else
+              yaw = atan2(vec_path[counter-1][1]-vec_path[counter][1],vec_path[counter-1][0]-vec_path[counter][0]);
+          pose.pose.orientation = tf2::toMsg(tf2::Quaternion(tf2::Vector3(0,0,1),yaw));
+      }
+      counter++;
+      path.poses.push_back(pose);
+  }
+  
+  return path;
+}
+
+nav_msgs::msg::Path LqrController::getLocalPlan(const nav_msgs::msg::Path & global_plan){
+  nav_msgs::msg::Path path;
+  std::shared_ptr<bezier_curve_generator> bezier_generator = std::make_shared<bezier_curve_generator>();
+  vector<vector<double>> global_path;
+  // run through every segment of the global plan
+  path.header = global_plan.header;
+  path.poses.clear();
+  for(size_t i = 0;i<global_plan.poses.size()-1;i++){
+    if(auto_determin_local_plan_){
+      vector<double> start = vector<double>({global_plan.poses[i].pose.position.x,global_plan.poses[i].pose.position.y});
+      vector<double> end = vector<double>({global_plan.poses[i+1].pose.position.x,global_plan.poses[i+1].pose.position.y});
+      bool forward_dir = false;
+      vector<vector<double>> control_points = bezier_generator->compute_control_point(start, end, bezier_generator->RATIO,forward_dir);
+      bezier_generator->generate_bezier_curve(control_points,global_path);
+      nav_msgs::msg::Path seg_plan = getCompleteLocalPlan(global_path,global_plan.poses[0],
+        global_plan.poses[global_plan.poses.size()-1],
+        forward_dir);
+      for (const auto& pose : seg_plan.poses) {
+        RCLCPP_INFO(logger_, "Pose: x=%f, y=%f, z=%f, orientation=(%f, %f, %f, %f)",
+                    pose.pose.position.x, pose.pose.position.y, pose.pose.position.z,
+                    pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
+      }
+      path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end());
+    }
+  }
+  
+  return path;
+}
+
 void LqrController::setPlan(const nav_msgs::msg::Path & path)
 {
   RCLCPP_INFO(logger_,"setting new plan");
@@ -363,8 +429,13 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   global_plan_ = path;
   // remove dulicated point so that we can use the path to find cusp index
   removeDuplicatedPathPoint(global_plan_);
+  // local plan generator
+  // input: global plan, sparse path point
+  // output: local plan, dense path point
+  nav_msgs::msg::Path local_plan = getLocalPlan(global_plan_);
+  global_path_pub_->publish(local_plan);
   // get cusp index list
-  cusp_index_ = find_cusp(global_plan_);
+  cusp_index_ = find_cusp(local_plan);
   // cut segament based on cusp index
   path_segment_.clear();
   for(size_t i=0;i<cusp_index_.size()-1;i++){
@@ -1466,6 +1537,8 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         use_output_filter_ = parameter.as_bool();
       }else if(name == plugin_name_ + ".use_direct_output"){
         use_direct_output_ = parameter.as_bool();
+      }else if(name == plugin_name_ + ".auto_determin_local_plan"){
+        auto_determin_local_plan_ = parameter.as_bool();
       }
       // RCLCPP_INFO(logger_,"parameter %s changed to %d",parameter.get_name().c_str(),parameter.as_bool());
     } else if (type == ParameterType::PARAMETER_INTEGER) {

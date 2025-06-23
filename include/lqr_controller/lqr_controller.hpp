@@ -200,7 +200,12 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * @param msg Speed limit message
    */
   void speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  
+  nav_msgs::msg::Path getLocalPlan(const nav_msgs::msg::Path & global_plan);
+  nav_msgs::msg::Path getCompleteLocalPlan(
+    vector<vector<double>> vec_path,
+    geometry_msgs::msg::PoseStamped start,
+    geometry_msgs::msg::PoseStamped goal,
+    bool dir);
 
   double lerp(double a, double b, double t);
   double angle_lerp(double a, double b, double t);
@@ -239,6 +244,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double max_steer_rate_;
   geometry_msgs::msg::Twist last_cmd_vel_;
   double allowed_speed_forward_,allowed_speed_backward_;
+  bool auto_determin_local_plan_;
 
 
   nav_msgs::msg::Path global_plan_;
