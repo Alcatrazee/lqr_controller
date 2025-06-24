@@ -117,6 +117,8 @@ void LqrController::configure(
     node, plugin_name_ + ".acc_effort_penalty", rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".auto_determin_local_plan", rclcpp::ParameterValue(true));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".local_plan_resolution", rclcpp::ParameterValue(0.05));
 
   node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
   node->get_parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_);
@@ -127,6 +129,7 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".min_linear_accel", min_lin_acc_);
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter(plugin_name_ + ".max_w_accel", max_w_acc_);
+  node->get_parameter(plugin_name_ + ".local_plan_resolution", local_plan_resolution_);
   node->get_parameter(plugin_name_ + ".max_steer_rate", max_steer_rate_);
   node->get_parameter(plugin_name_ + ".auto_determin_local_plan",auto_determin_local_plan_);
   node->get_parameter(plugin_name_ + ".dead_band_speed", dead_band_speed_);
@@ -172,6 +175,12 @@ void LqrController::configure(
   speed_limit_sub_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(
     "set_speed_limit", set_speed_qos_profile,
     std::bind(&LqrController::speedLimitCallback, this, std::placeholders::_1));
+  
+  manual_control_points_sub_ = node->create_subscription<geometry_msgs::msg::PoseArray>(
+    "manual_control_points", rclcpp::QoS(1),
+    std::bind(&LqrController::manualControlPointsCallback, this, std::placeholders::_1));
+  
+  manual_control_points_mutex_.unlock();
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -395,30 +404,79 @@ nav_msgs::msg::Path LqrController::getCompleteLocalPlan(
 
 nav_msgs::msg::Path LqrController::getLocalPlan(const nav_msgs::msg::Path & global_plan){
   nav_msgs::msg::Path path;
-  std::shared_ptr<bezier_curve_generator> bezier_generator = std::make_shared<bezier_curve_generator>();
-  vector<vector<double>> global_path;
+  std::shared_ptr<bezier_curve_generator> bezier_generator = std::make_shared<bezier_curve_generator>(bezier_curve_generator::RATIO,local_plan_resolution_);
+  vector<vector<double>> segment_path;
   // run through every segment of the global plan
   path.header = global_plan.header;
   path.poses.clear();
   for(size_t i = 0;i<global_plan.poses.size()-1;i++){
     if(auto_determin_local_plan_){
-      vector<double> start = vector<double>({global_plan.poses[i].pose.position.x,global_plan.poses[i].pose.position.y});
-      vector<double> end = vector<double>({global_plan.poses[i+1].pose.position.x,global_plan.poses[i+1].pose.position.y});
+      vector<double> start = vector<double>({global_plan.poses[i].pose.position.x, global_plan.poses[i].pose.position.y, tf2::getYaw(global_plan.poses[i].pose.orientation)});
+      vector<double> end = vector<double>({global_plan.poses[i+1].pose.position.x,global_plan.poses[i+1].pose.position.y,tf2::getYaw(global_plan.poses[i+1].pose.orientation)});
       bool forward_dir = false;
       vector<vector<double>> control_points = bezier_generator->compute_control_point(start, end, bezier_generator->RATIO,forward_dir);
-      bezier_generator->generate_bezier_curve(control_points,global_path);
-      nav_msgs::msg::Path seg_plan = getCompleteLocalPlan(global_path,global_plan.poses[0],
-        global_plan.poses[global_plan.poses.size()-1],
+      
+      for (size_t i = 0; i < control_points.size(); ++i) {
+        std::cout << "Control Point " << i << ": (" << control_points[i][0] << ", " << control_points[i][1] << ")" << std::endl;
+      } 
+      segment_path.clear();
+      bezier_generator->generate_bezier_curve(control_points,segment_path);
+      
+      nav_msgs::msg::Path seg_plan = getCompleteLocalPlan(segment_path,global_plan.poses[i],
+        global_plan.poses[i+1],
         forward_dir);
-      for (const auto& pose : seg_plan.poses) {
-        RCLCPP_INFO(logger_, "Pose: x=%f, y=%f, z=%f, orientation=(%f, %f, %f, %f)",
-                    pose.pose.position.x, pose.pose.position.y, pose.pose.position.z,
-                    pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
+      if( i !=global_plan.poses.size()-1)
+        path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end()-1);
+      else
+        path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end());
+    }else{    
+      // use manual control points
+      std::lock_guard<std::mutex> lock(manual_control_points_mutex_);
+      // manual_control_points_mutex_.lock();
+      if(i == 0){
+        continue;
       }
-      path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end());
+      // TODO: validate control point list
+      for (size_t idx = 0; idx < manual_contrl_points_.size(); ++idx) {
+        RCLCPP_INFO(logger_, "manual_control_points_[%zu]: (%f, %f)", idx, manual_contrl_points_[idx][0], manual_contrl_points_[idx][1]);
+      }
+      RCLCPP_INFO(logger_,"global plan poses size: %ld manual points size %d", global_plan.poses.size(),static_cast<int>(manual_contrl_points_.size()));
+      int required_control_points = ((int)global_plan.poses.size()-2)*4;
+      int actual_control_points = static_cast<int>(manual_contrl_points_.size());
+      RCLCPP_INFO(logger_,"manual control points size: %d, required control points %d", actual_control_points,required_control_points);
+      if(required_control_points!=actual_control_points){
+        RCLCPP_ERROR(logger_,"manual control points size is not correct, should be %d, but got %d", required_control_points,actual_control_points);
+        throw nav2_core::PlannerException("wrong manual control points size");
+        return path;
+      }
+      vector<double> start = vector<double>({global_plan.poses[i].pose.position.x, global_plan.poses[i].pose.position.y, tf2::getYaw(global_plan.poses[i].pose.orientation)});
+      vector<double> end = vector<double>({global_plan.poses[i+1].pose.position.x,global_plan.poses[i+1].pose.position.y,tf2::getYaw(global_plan.poses[i+1].pose.orientation)});
+      vector<vector<double>> control_points;
+      bool forward_dir = false;
+      control_points.push_back(start);
+      control_points.push_back(manual_contrl_points_[(i-1)*4+1]);
+      control_points.push_back(manual_contrl_points_[(i-1)*4+2]);
+      control_points.push_back(end);
+      bezier_generator->compute_control_point(start, end, bezier_generator->RATIO,forward_dir); // TODO: remove this, direction should be determined by control point
+      for (size_t i = 0; i < control_points.size(); ++i) {
+        std::cout << "Control Point " << i << ": (" << control_points[i][0] << ", " << control_points[i][1] << ")" << std::endl;
+      } 
+      segment_path.clear();
+      bezier_generator->generate_bezier_curve(control_points,segment_path);
+      
+      nav_msgs::msg::Path seg_plan = getCompleteLocalPlan(segment_path,global_plan.poses[i],
+        global_plan.poses[i+1],
+        forward_dir);
+      if( i !=global_plan.poses.size()-1)
+        path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end()-1);
+      else
+        path.poses.insert(path.poses.end(), seg_plan.poses.begin(), seg_plan.poses.end());
+      
     }
+    
   }
-  
+  manual_contrl_points_.clear();
+  auto_determin_local_plan_ = true; // reset auto determin local plan to true
   return path;
 }
 
@@ -432,16 +490,33 @@ void LqrController::setPlan(const nav_msgs::msg::Path & path)
   // local plan generator
   // input: global plan, sparse path point
   // output: local plan, dense path point
+
+
+  // for (const auto& pose : global_plan_.poses) {
+  //   double roll, pitch, yaw;
+  //   tf2::Quaternion quat;
+  //   tf2::fromMsg(pose.pose.orientation, quat);
+  //   tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+  //   RCLCPP_INFO(logger_, "global_plan_: x=%f, y=%f, z=%f, orientation=(%f, %f, %f) [rpy], quaternion=(%f, %f, %f, %f)",
+  //               pose.pose.position.x, pose.pose.position.y, pose.pose.position.z,
+  //               roll, pitch, yaw,
+  //               pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w);
+  // }
+
   nav_msgs::msg::Path local_plan = getLocalPlan(global_plan_);
   global_path_pub_->publish(local_plan);
   // get cusp index list
   cusp_index_ = find_cusp(local_plan);
+  // RCLCPP_INFO(logger_, "cusp_index_:");
+  // for (size_t i = 0; i < cusp_index_.size(); ++i) {
+  //   RCLCPP_INFO(logger_, "  [%zu] = %d", i, cusp_index_[i]);
+  // }
   // cut segament based on cusp index
   path_segment_.clear();
   for(size_t i=0;i<cusp_index_.size()-1;i++){
     nav_msgs::msg::Path path_segment,unsmoothed_path;
     for(int j=cusp_index_[i];j<=cusp_index_[i+1];j++){
-      unsmoothed_path.poses.push_back(global_plan_.poses[j]);
+      unsmoothed_path.poses.push_back(local_plan.poses[j]);
     }
     path_segment.poses = resample_path(unsmoothed_path.poses, unsmoothed_path.poses.size());
     path_segment.header.frame_id = global_plan_.header.frame_id;
@@ -1255,6 +1330,22 @@ double LqrController::costAtPose(const double & x, const double & y)
   return static_cast<double>(cost);
 }
 
+void LqrController::manualControlPointsCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg){
+  RCLCPP_INFO(logger_, "Received manual control points");
+  std::lock_guard<std::mutex> lock(manual_control_points_mutex_);
+  manual_contrl_points_.clear();
+  for(const auto & pose : msg->poses){
+    geometry_msgs::msg::PoseStamped pose_stamped;
+    pose_stamped.pose = pose;
+    pose_stamped.header = msg->header;
+    manual_contrl_points_.push_back(vector<double>({pose_stamped.pose.position.x,
+                                                          pose_stamped.pose.position.y}));
+    // RCLCPP_INFO(logger_, "Received manual control point: (%f, %f)",
+    //             pose_stamped.pose.position.x, pose_stamped.pose.position.y);
+  }
+  RCLCPP_INFO(logger_, "Total manual control points received: %zu", manual_contrl_points_.size());
+}
+
 // set speed limit via topic
 void LqrController::speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg){
   // message must contain two values: forward and backward speed limits
@@ -1369,6 +1460,13 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
           min_lin_acc_ = std::abs(parameter.as_double());
         }else{
           min_lin_acc_ = parameter.as_double();
+        }
+      }else if(name == plugin_name_ + ".local_plan_resolution"){
+        if(parameter.as_double() < 0){
+          RCLCPP_WARN(logger_,"parameter should be positive, using absolute value instead.");
+          local_plan_resolution_ = std::abs(parameter.as_double());
+        }else{
+          local_plan_resolution_ = parameter.as_double();
         }
       }
       else if(name == plugin_name_ + ".max_steer_rate"){

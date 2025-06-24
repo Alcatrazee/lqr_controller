@@ -110,9 +110,6 @@ vector<vector<double>>  bezier_curve_generator::compute_control_point(const vect
     control_points.push_back(vector<double>({control_point_end[0],control_point_end[1]}));
     control_points.push_back(vector<double>({end[0],end[1]}));
 
-    for (size_t i = 0; i < control_points.size(); ++i) {
-        std::cout << "Control Point " << i << ": (" << control_points[i][0] << ", " << control_points[i][1] << ")" << std::endl;
-    }
     return control_points;
 }
 

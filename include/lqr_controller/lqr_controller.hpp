@@ -1,6 +1,8 @@
 #ifndef LQR_CONTROLLER_HPP
 #define LQR_CONTROLLER_HPP
 
+#include <geometry_msgs/msg/detail/point32__struct.hpp>
+#include <geometry_msgs/msg/detail/pose_array__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
 #include <std_msgs/msg/detail/float32_multi_array__struct.hpp>
 #include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
@@ -28,6 +30,7 @@
 #include <std_msgs/msg/u_int64_multi_array.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
 
 namespace lqr_controller
 {
@@ -211,6 +214,10 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double angle_lerp(double a, double b, double t);
   double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
 
+
+  void manualControlPointsCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+
+
   std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
 
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
@@ -239,13 +246,15 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double inversion_xy_tolerance_;
   double Q_[5];
   double R_[2];
+  double local_plan_resolution_;
   double Q_max_[5],Q_min_[5],R_max_[2],R_min_[2];
   int robot_search_pose_dist_;
   double max_steer_rate_;
   geometry_msgs::msg::Twist last_cmd_vel_;
   double allowed_speed_forward_,allowed_speed_backward_;
   bool auto_determin_local_plan_;
-
+  vector<vector<double>> manual_contrl_points_;
+  mutex manual_control_points_mutex_;
 
   nav_msgs::msg::Path global_plan_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
@@ -253,12 +262,12 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>  target_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr speed_limit_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr manual_control_points_sub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::UInt64MultiArray>> error_code_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float32MultiArray>> debug_pub_;
-  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
-  collision_checker_;
+  std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>> collision_checker_;
 
   // Dynamic parameters handler
   std::mutex mutex_;
