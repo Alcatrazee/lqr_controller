@@ -216,7 +216,14 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
 
 
   void manualControlPointsCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
-
+  bool validateControlPoints(vector<vector<double>> &control_points,const nav_msgs::msg::Path & global_plan);
+  void checkError(
+    vector<double> &obstacle_distance_list,
+    size_t target_index,
+    vector<double> &sp,
+    std_msgs::msg::UInt64MultiArray &ErrCode,
+    geometry_msgs::msg::PoseStamped &global_pose,
+    nav_msgs::msg::Path &local_plan);
 
   std::vector<geometry_msgs::msg::PoseStamped> resample_path(const std::vector<geometry_msgs::msg::PoseStamped>& poses, size_t num_samples);
 
@@ -253,6 +260,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   geometry_msgs::msg::Twist last_cmd_vel_;
   double allowed_speed_forward_,allowed_speed_backward_;
   bool auto_determin_local_plan_;
+  double max_track_err_tolerance_;
   vector<vector<double>> manual_contrl_points_;
   mutex manual_control_points_mutex_;
 
