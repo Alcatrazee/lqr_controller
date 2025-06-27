@@ -1089,26 +1089,29 @@ void LqrController::checkError(
     nav_msgs::msg::Path &local_plan)
   { 
   // check obstacle encounter moment(if not logged) and compute stopped duration
-  if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
-    RCLCPP_ERROR(logger_,"obstacle too close, stop!");
-    ErrCode.data.push_back(100006);
-    if(encounter_obst_moment_logged_ == false){
-      encounter_obst_moment_logged_ = true;
-      encounter_obst_moment_ = clock_->now().seconds();
-    }else{
-      double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
-      RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
-      if(dt_obst>obstacle_timeout_){
-        throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
+  if(use_obstacle_stopping_ == true){
+    if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
+      RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+      ErrCode.data.push_back(100006);
+      if(encounter_obst_moment_logged_ == false){
+        encounter_obst_moment_logged_ = true;
+        encounter_obst_moment_ = clock_->now().seconds();
+      }else{
+        double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
+        RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
+        if(dt_obst>obstacle_timeout_){
+          throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
+        }
       }
+    }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
+      RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
+      ErrCode.data.push_back(100005);
+      encounter_obst_moment_logged_ = false;
+    }else{
+      encounter_obst_moment_logged_ = false;
     }
-  }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
-    RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
-    ErrCode.data.push_back(100005);
-    encounter_obst_moment_logged_ = false;
-  }else{
-    encounter_obst_moment_logged_ = false;
   }
+  
   // check if robot is too far from path
   double distance_to_tracking_point = nav2_util::geometry_utils::euclidean_distance(global_pose,local_plan.poses[target_index]);
   RCLCPP_INFO(logger_,"distance to tracking point %f track err %f",distance_to_tracking_point,max_track_err_tolerance_);
