@@ -55,7 +55,7 @@ void LQR::param_struct() {
  
 Matrix2x5 LQR::cal_Riccati() {
 	using namespace Eigen;
-	int N = 1000;//迭代终止次数
+	int N = 200;//迭代终止次数
 	double err = 100;//误差值
 	double err_tolerance = 1e-3;//误差收敛阈值
 	Matrix5x5 Qf = Q;
@@ -72,12 +72,16 @@ Matrix2x5 LQR::cal_Riccati() {
 		// cout << "itercout:" << iter_num << "误差为" << err << endl;
 		if(err < err_tolerance)//
 		{
-			P = Pn;
 			// cout << "迭代次数" << iter_num << endl;
 			break;
 		}
-		P = Pn;
 	}
+	if (!Pn.allFinite()) {
+		cerr << "Warning: Pn contains NaN or Inf values!" << endl;
+	}else{
+		P = Pn;//
+	}
+
 	// cout << "迭代次数" << num_of_iter << "error: " << err << endl;
 	
 	// cout << "P: " << P << endl;

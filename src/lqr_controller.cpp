@@ -173,6 +173,11 @@ void LqrController::configure(
   collision_polygon_pub_ = node->create_publisher<geometry_msgs::msg::PolygonStamped>("collision_polygon", 10);
   error_code_pub_ = node->create_publisher<std_msgs::msg::UInt64MultiArray>("error_code", 10);
   debug_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("lqr_debug", 10);
+
+  // parameters topics subscriptions
+  use_obst_flag_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    "use_obstacle_stopping", rclcpp::QoS(1),
+    std::bind(&LqrController::useObstacleStoppingCallback, this, std::placeholders::_1));
   
   rclcpp::QoS set_speed_qos_profile(rclcpp::KeepLast(1));
   set_speed_qos_profile.best_effort();
@@ -208,7 +213,6 @@ void LqrController::cleanup()
   collision_polygon_pub_.reset();
   error_code_pub_.reset();
   debug_pub_.reset();
-  // target_arc_pub_.reset();
   cusp_pub_.reset();
 }
 
@@ -250,6 +254,14 @@ void LqrController::deactivate()
   debug_pub_->on_deactivate();
   cusp_pub_->on_deactivate();
   dyn_params_handler_.reset();
+}
+
+void LqrController::useObstacleStoppingCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  RCLCPP_INFO(logger_, "Received use_obstacle_stopping flag: %s", msg->data ? "true" : "false");
+  use_obstacle_stopping_ = msg->data;
+  node_.lock()->set_parameter(
+    rclcpp::Parameter(plugin_name_ + ".use_obstacle_stopping", use_obstacle_stopping_));
 }
 
 void LqrController::removeDuplicatedPathPoint(nav_msgs::msg::Path & path)
@@ -452,7 +464,13 @@ nav_msgs::msg::Path LqrController::getLocalPlan(const nav_msgs::msg::Path & glob
   std::lock_guard<std::mutex> lock(manual_control_points_mutex_);
   bool is_control_points_valid = false;
   if(auto_determin_local_plan_ == false){
-    is_control_points_valid = validateControlPoints(manual_contrl_points_,global_plan);
+    if(manual_contrl_points_.size() > 0){
+      is_control_points_valid = validateControlPoints(manual_contrl_points_,global_plan);
+    }else{
+      RCLCPP_ERROR(logger_,"no manual control points received, unable to generate local plan");
+      throw nav2_core::PlannerException("amount of control points is not correct, check manual control points topic");
+      return path;
+    }
   }
   for(size_t i = 0;i<global_plan.poses.size()-1;i++){
     vector<double> start = vector<double>({global_plan.poses[i].pose.position.x, global_plan.poses[i].pose.position.y, tf2::getYaw(global_plan.poses[i].pose.orientation)});
@@ -1114,7 +1132,7 @@ void LqrController::checkError(
   
   // check if robot is too far from path
   double distance_to_tracking_point = nav2_util::geometry_utils::euclidean_distance(global_pose,local_plan.poses[target_index]);
-  RCLCPP_INFO(logger_,"distance to tracking point %f track err %f",distance_to_tracking_point,max_track_err_tolerance_);
+  // RCLCPP_INFO(logger_,"distance to tracking point %f track err %f",distance_to_tracking_point,max_track_err_tolerance_);
   if(distance_to_tracking_point > max_track_err_tolerance_){
     RCLCPP_ERROR(logger_,"distance to tracking point %f is larger than max tracking distance %f, goal failed.",distance_to_tracking_point,max_track_err_tolerance_);
     ErrCode.data.push_back(100007);
@@ -1323,6 +1341,7 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   debug_info.data.push_back(kesi_);
   debug_info.data.push_back(control.v);
   debug_info.data.push_back(control.kesi);
+  debug_info.data.push_back(K);
   debug_pub_->publish(debug_info);
   last_cmd_vel_.angular.z = az;
   last_cmd_vel_.linear.x = vx;
@@ -1372,8 +1391,10 @@ void LqrController::manualControlPointsCallback(const geometry_msgs::msg::PoseAr
     manual_contrl_points_.push_back(vector<double>({pose_stamped.pose.position.x,
                                                           pose_stamped.pose.position.y}));
   }
-  RCLCPP_INFO(logger_, "Total manual control points received: %zu", manual_contrl_points_.size());
   auto_determin_local_plan_ = false;
+  if(manual_contrl_points_.size()==0){
+    RCLCPP_ERROR(logger_, "The amount of control points is 0, check control points topic.");
+  }
 }
 
 // set speed limit via topic
@@ -1407,6 +1428,8 @@ void LqrController::speedLimitCallback(const std_msgs::msg::Float64MultiArray::S
     }else{
       allowed_speed_backward_ = abs(msg->data[1]);
     }
+    node_.lock()->set_parameter(rclcpp::Parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_));
+    node_.lock()->set_parameter(rclcpp::Parameter(plugin_name_ + ".max_bvx_allowed", allowed_speed_backward_));
   }
 }
 
@@ -1428,6 +1451,8 @@ void LqrController::setSpeedLimit(
       // Speed limit is expressed in absolute value
     }
   }
+  node_.lock()->set_parameter(rclcpp::Parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_));
+  node_.lock()->set_parameter(rclcpp::Parameter(plugin_name_ + ".max_bvx_allowed", allowed_speed_backward_));
   RCLCPP_INFO(logger_, "Speed limit set to: %f (backward), %f (forward)", 
               allowed_speed_backward_, allowed_speed_forward_);
 }

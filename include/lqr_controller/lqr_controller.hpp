@@ -4,6 +4,7 @@
 #include <geometry_msgs/msg/detail/point32__struct.hpp>
 #include <geometry_msgs/msg/detail/pose_array__struct.hpp>
 #include <geometry_msgs/msg/detail/twist__struct.hpp>
+#include <std_msgs/msg/detail/bool__struct.hpp>
 #include <std_msgs/msg/detail/float32_multi_array__struct.hpp>
 #include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
@@ -31,6 +32,7 @@
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 namespace lqr_controller
 {
@@ -203,6 +205,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * @param msg Speed limit message
    */
   void speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
+  void useObstacleStoppingCallback(const std_msgs::msg::Bool::SharedPtr msg);
   nav_msgs::msg::Path getLocalPlan(const nav_msgs::msg::Path & global_plan);
   nav_msgs::msg::Path getCompleteLocalPlan(
     vector<vector<double>> vec_path,
@@ -271,6 +274,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>  target_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr speed_limit_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr use_obst_flag_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr manual_control_points_sub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
