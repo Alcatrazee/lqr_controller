@@ -624,7 +624,7 @@ int LqrController::Find_target_index(
   return index;
 }
 
-vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose)
+vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose,size_t start_index)
 {
   vector<double> distance_list;
   nav_msgs::msg::Path obst_free_path;
@@ -644,6 +644,10 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
     }
     
     obst_free_path.poses.push_back(path.poses[i]);
+    // pass the passed points by treating them as free path
+    if(i < start_index){
+      continue;
+    }
     double yaw = get_yaw_from_quaternion(path.poses[i].pose.orientation);
     // check ith footprint cost, if cost is equal to lethal, then that is the obstacle
     double footprint_cost = collision_checker_->footprintCostAtPose(path.poses[i].pose.position.x, path.poses[i].pose.position.y, yaw,costmap_ros_->getRobotFootprint());
@@ -657,19 +661,29 @@ vector<double> LqrController::get_path_obst_distance(const nav_msgs::msg::Path &
     }
   }
 
+  // if no obstacle found, publish empty polygon to clear previous collision polygon
+  if(obst_index == -1){
+    geometry_msgs::msg::PolygonStamped collision_polygon;
+    collision_polygon.header.frame_id = path.header.frame_id;
+    collision_polygon.header.stamp = rclcpp::Time();
+    collision_polygon_pub_->publish(collision_polygon);
+  }
+
   // find cost
   RCLCPP_DEBUG(logger_, "Obstacle index: %d", obst_index);
   if(obst_index!=-1){
     for(uint32_t i = 0; i < path.poses.size(); i++){
       double distance = 0;
       if(i<(uint32_t)obst_index){
-        distance = nav2_util::geometry_utils::calculate_path_length(obst_free_path, i);
+        distance = nav2_util::geometry_utils::calculate_path_length(obst_free_path, start_index);
+      }else{
+        distance_list.push_back(-2);    // -2 means after obstacle
       }
       distance_list.push_back(distance);
     }
   }else{
     for(uint32_t i = 0; i < path.poses.size(); i++){
-      distance_list.push_back(-1);
+      distance_list.push_back(-1);    // -1 means obstacle free
     }
   }
   return distance_list;
@@ -916,7 +930,7 @@ vector<double> LqrController::optimizeCurveConstraints(
   return max_v_curvature_list;
 }
 
-vector<double> LqrController::get_speed_profile(vehicleState &state,
+vector<double> LqrController::getSpeedProfile(vehicleState &state,
                           int /*tracking_index*/,
                           float fv_max,
                           float bv_max,
@@ -930,7 +944,6 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
   vector<double> max_v_curvature_list(wp.size());
   vector<double> max_v_goal_list(wp.size());
   vector<double> max_v_obstacle_list(wp.size());
-  // vector<double> max_v_current_list(wp.size());   // acceleration constraint
  
   // get next point on from or backward direction
   bool backward_motion = determin_backward(state,wp);
@@ -978,9 +991,13 @@ vector<double> LqrController::get_speed_profile(vehicleState &state,
         max_v_obst = 0;
       }else if(distance_to_obst[i] < obst_slow_dist_ && distance_to_obst[i] > obst_stop_dist_){
         max_v_obst = sqrt(2*min_lin_deacc_*(distance_to_obst[i] - obst_stop_dist_));
+      }else if(distance_to_obst[i] == -2){
+        // points after obstacle set to stop
+        max_v_obst = 0;
       }
     }
     max_v_obstacle_list[i] = max_v_obst;
+    
   }
 
   // get speed profile
@@ -1048,8 +1065,7 @@ vector<vector<double>> LqrController::get_kappa_d_kappa(vector<waypoint>& wp){
     for(size_t i=0; i<wp.size(); i++){
       kappa_d_kappa.push_back({kappa_list[i],kappa_rate_list[i]});
     }
-  }
-  else{  // TODO: add kappa list when wp is less than 3
+  }else{
     for(size_t i=0;i<wp.size();i++)
       kappa_d_kappa.push_back({0,0});
   }
@@ -1108,21 +1124,29 @@ void LqrController::checkError(
   { 
   // check obstacle encounter moment(if not logged) and compute stopped duration
   if(use_obstacle_stopping_ == true){
-    if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
-      RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+    // check current pose is in collision polygon
+    bool current_pose_in_collision = false;
+    if(collision_checker_->footprintCostAtPose(global_pose.pose.position.x, global_pose.pose.position.y, 
+      get_yaw_from_quaternion(global_pose.pose.orientation),costmap_ros_->getRobotFootprint()) > static_cast<double>(nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)){
+      RCLCPP_ERROR(logger_,"robot is in collision polygon, goal failed.");
+        current_pose_in_collision = true;
+      }
+    if((obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0) || (current_pose_in_collision == true)){
+      RCLCPP_ERROR_THROTTLE(logger_,*clock_,1000,"obstacle too close, stop!");
       ErrCode.data.push_back(100006);
       if(encounter_obst_moment_logged_ == false){
         encounter_obst_moment_logged_ = true;
         encounter_obst_moment_ = clock_->now().seconds();
       }else{
         double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
-        RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
+        RCLCPP_INFO_THROTTLE(logger_,*clock_,1000,"obstacle dt: %lf",dt_obst);
         if(dt_obst>obstacle_timeout_){
+          RCLCPP_ERROR(logger_,"obstacle ahead, waited for too long. goal failed.");
           throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
         }
       }
     }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
-      RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
+      RCLCPP_WARN_THROTTLE(logger_,*clock_,500,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
       ErrCode.data.push_back(100005);
       encounter_obst_moment_logged_ = false;
     }else{
@@ -1225,9 +1249,9 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   remove_duplicated_points(wps);
 
   // compute curvature and apply constraints to speed
-  vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose);
+  vector<double> obstacle_distance_list = get_path_obst_distance(local_plan,global_pose,target_index);
   vector<vector<double>> kappa_d_kappa_list = get_kappa_d_kappa(wps);
-  vector<double> sp = get_speed_profile(robot_state_,target_index,allowed_speed_forward_,allowed_speed_backward_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
+  vector<double> sp = getSpeedProfile(robot_state_,target_index,allowed_speed_forward_,allowed_speed_backward_,dead_band_speed_,max_lateral_accel_,wps,kappa_d_kappa_list,obstacle_distance_list,path_offset);
 
   // interpolate pose for smooth curvature and speed profile
   geometry_msgs::msg::PoseStamped target_pose;

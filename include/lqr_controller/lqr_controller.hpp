@@ -110,7 +110,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
 
   bool determin_backward(vehicleState &state,vector<waypoint>& wp);
 
-  vector<double> get_speed_profile(vehicleState &state,
+  vector<double> getSpeedProfile(vehicleState &state,
     int tracking_index,
     float fv_max,
     float bv_max,
@@ -125,7 +125,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
 
   int findMinAbsIndex(const std::vector<double>& max_v_curvature_list, const std::vector<int>& curve_index);
 
-  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose);
+  vector<double> get_path_obst_distance(const nav_msgs::msg::Path &path,const geometry_msgs::msg::PoseStamped &robot_pose,size_t start_index);
   
   geometry_msgs::msg::PoseStamped interpolate_pose(
     const geometry_msgs::msg::PoseStamped & pose,
