@@ -217,6 +217,8 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   double angle_lerp(double a, double b, double t);
   double get_yaw_from_quaternion(const geometry_msgs::msg::Quaternion& quat) ;
 
+  double curvature_cofficient_to_w_effort_penalty_,speed_cofficient_to_w_effort_penalty_;
+
 
   void manualControlPointsCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
   bool validateControlPoints(vector<vector<double>> &control_points,const nav_msgs::msg::Path & global_plan);

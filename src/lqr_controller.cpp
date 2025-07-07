@@ -122,6 +122,11 @@ void LqrController::configure(
     node, plugin_name_ + ".local_plan_resolution", rclcpp::ParameterValue(0.05));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_track_err_tolerance", rclcpp::ParameterValue(0.5));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".cof_curvature",rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(
+    node, plugin_name_ + ".cof_speed",rclcpp::ParameterValue(5.0));
+  
 
   node->get_parameter(plugin_name_ + ".max_fvx", max_fvx_);
   node->get_parameter(plugin_name_ + ".max_fvx_allowed", allowed_speed_forward_);
@@ -158,6 +163,8 @@ void LqrController::configure(
   node->get_parameter(plugin_name_ + ".v_err_penalty", Q_[4]);
   node->get_parameter(plugin_name_ + ".w_effort_penalty_max", R_max_[0]);
   node->get_parameter(plugin_name_ + ".w_effort_penalty_min", R_min_[0]);
+  node->get_parameter(plugin_name_ + ".cof_curvature", curvature_cofficient_to_w_effort_penalty_);
+  node->get_parameter(plugin_name_ + ".cof_speed", speed_cofficient_to_w_effort_penalty_);
   node->get_parameter(plugin_name_ + ".acc_effort_penalty", R_[1]);
   
   min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
@@ -1299,8 +1306,16 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     alpha = std::clamp(speed_diff,0.0,1.0);
     Q_[0] = (1-alpha)*Q_max_[0] + alpha*Q_min_[0];
     Q_[2] = (1-alpha)*Q_max_[2] + alpha*Q_min_[2];
-    R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
+    
+    // R_[0] = (1-alpha)*R_min_[0] + alpha*R_max_[0];
   }
+  double curvature_cof = 1.0,speed_cof = 1.0;
+  if(K>0.1){
+    curvature_cof = 1+abs(1/K)/curvature_cofficient_to_w_effort_penalty_;
+  }
+  speed_cof = 1+pow(speed_smoothed,2)/speed_cofficient_to_w_effort_penalty_;
+  R_[0] = R_min_[0]*curvature_cof*speed_cof;
+  RCLCPP_INFO(logger_,"R: %f K:%f K_cof: %f speed_smoothed %f speed_cof:%f ",R_[0],K,curvature_cof,speed_smoothed,speed_cof);
   // RCLCPP_INFO(logger_,"Q: %f %f %f %f %f",Q_[0],Q_[2],R_[0],speed_smoothed,alpha);
 
   lqr_controller_->initial(vehicle_L_, dt_, robot_state_, Point, U_r, Q_, R_);
@@ -1696,6 +1711,10 @@ rcl_interfaces::msg::SetParametersResult LqrController::dynamicParametersCallbac
         }
       }else if(name == plugin_name_ + ".max_track_err_tolerance"){
         max_track_err_tolerance_ = parameter.as_double();
+      }else if(name == plugin_name_ + ".cof_curvature"){
+        curvature_cofficient_to_w_effort_penalty_ = abs(parameter.as_double());
+      }else if(name == plugin_name_ + ".cof_speed"){
+        speed_cofficient_to_w_effort_penalty_ = abs(parameter.as_double());
       }
       min_lin_deacc_back_ = pow(max_bvx_,2)/(2*approach_velocity_scaling_dist_back_);
       min_lin_deacc_ = pow(max_fvx_,2)/(2*approach_velocity_scaling_dist_);
