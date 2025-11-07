@@ -1,16 +1,11 @@
 #include <algorithm>
 #include <chrono>
-#include <geometry_msgs/msg/detail/point_stamped__struct.hpp>
-#include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
-#include <geometry_msgs/msg/detail/twist__struct.hpp>
 #include <nav2_util/geometry_utils.hpp>
 #include <nav_msgs/msg/detail/path__struct.hpp>
 #include <numeric>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logging.hpp>
 #include <rclcpp/time.hpp>
-#include <std_msgs/msg/detail/float32_multi_array__struct.hpp>
-#include <std_msgs/msg/detail/u_int64_multi_array__struct.hpp>
 #include <string>
 #include <memory>
 #include <vector>
@@ -168,6 +163,10 @@ void LqrController::configure(
   speed_limit_sub_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(
     "set_speed_limit", set_speed_qos_profile,
     std::bind(&LqrController::speedLimitCallback, this, std::placeholders::_1));
+  
+  use_obst_stopping_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    "toggle_obstacle_stopping", 1,
+    std::bind(&LqrController::toggle_obstacle_stopping_callback,this,std::placeholders::_1));
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(costmap_);
@@ -176,6 +175,12 @@ void LqrController::configure(
 
   encounter_obst_moment_logged_ = false;
   lqr_controller_ = std::make_shared<LQR>();
+}
+
+void LqrController::toggle_obstacle_stopping_callback(const std_msgs::msg::Bool::SharedPtr msg){
+  use_obstacle_stopping_ = msg->data;
+  RCLCPP_INFO(logger_,"toggled obstacle stopping flag, now is %d",use_obstacle_stopping_);
+  // TODO: set parameter as false in parameter server
 }
 
 void LqrController::cleanup()
@@ -1033,23 +1038,27 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
   waypoint Point({0,target_pose.pose.position.x,target_pose.pose.position.y,get_yaw_from_quaternion(target_pose.pose.orientation)});//wps[target_index];
 
   // check obstacle encounter moment(if not logged) and compute stopped duration
-  if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
-    RCLCPP_ERROR(logger_,"obstacle too close, stop!");
-    ErrCode.data.push_back(100006);
-    if(encounter_obst_moment_logged_ == false){
-      encounter_obst_moment_logged_ = true;
-      encounter_obst_moment_ = clock_->now().seconds();
-    }else{
-      double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
-      RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
-      if(dt_obst>obstacle_timeout_){
-        throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
+  if(use_obstacle_stopping_ == true){
+    if(obstacle_distance_list[target_index]<=obst_stop_dist_ && sp[target_index] == 0 && obstacle_distance_list[target_index]>0){
+      RCLCPP_ERROR(logger_,"obstacle too close, stop!");
+      ErrCode.data.push_back(100006);
+      if(encounter_obst_moment_logged_ == false){
+        encounter_obst_moment_logged_ = true;
+        encounter_obst_moment_ = clock_->now().seconds();
+      }else{
+        double dt_obst = clock_->now().seconds() - encounter_obst_moment_;
+        RCLCPP_INFO(logger_,"obstacle dt: %lf",dt_obst);
+        if(dt_obst>obstacle_timeout_){
+          throw nav2_core::PlannerException("obstacle ahead, waited for too long. goal failed.");
+        }
       }
+    }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
+      RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
+      ErrCode.data.push_back(100005);
+      encounter_obst_moment_logged_ = false;
+    }else{
+      encounter_obst_moment_logged_ = false;
     }
-  }else if(obstacle_distance_list[target_index]<=obst_slow_dist_ && obstacle_distance_list[target_index]>0 && sp[target_index] != 0){
-    RCLCPP_WARN(logger_,"obstacle closing in %f, slowing down!",obstacle_distance_list[target_index]);
-    ErrCode.data.push_back(100005);
-    encounter_obst_moment_logged_ = false;
   }else{
     encounter_obst_moment_logged_ = false;
   }
@@ -1156,7 +1165,15 @@ geometry_msgs::msg::TwistStamped LqrController::computeVelocityCommands(
     // RCLCPP_INFO(logger_,"dist_to_goal: %f",dist_to_goal);
     if(dist_to_goal< min(pose_tolerance.position.x,pose_tolerance.position.y)){
       cmd_vel.twist.linear.x = 0;
-      cmd_vel.twist.angular.z= 0;
+      double current_yaw = get_yaw_from_quaternion(pose.pose.orientation);
+      double goal_yaw = get_yaw_from_quaternion(global_plan_.poses.back().pose.orientation);
+      double yaw_diff = angles::shortest_angular_distance(current_yaw, goal_yaw);
+      RCLCPP_INFO(logger_,"current: %f goal:%f yaw_diff: %f",current_yaw,goal_yaw,yaw_diff);
+      if (abs(yaw_diff) > get_yaw_from_quaternion(pose_tolerance.orientation)) {
+        double angular_vel = std::clamp(yaw_diff, -max_wz_, max_wz_); 
+        cmd_vel.twist.angular.z = 1.5*angular_vel;
+      }  
+
       RCLCPP_INFO(logger_,"goal reached -- from controller plugin");
     }
   }

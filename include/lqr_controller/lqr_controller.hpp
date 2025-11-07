@@ -28,6 +28,7 @@
 #include <std_msgs/msg/u_int64_multi_array.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 namespace lqr_controller
 {
@@ -200,7 +201,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
    * @param msg Speed limit message
    */
   void speedLimitCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
-  
+  void toggle_obstacle_stopping_callback(const std_msgs::msg::Bool::SharedPtr msg);
 
   double lerp(double a, double b, double t);
   double angle_lerp(double a, double b, double t);
@@ -247,6 +248,7 @@ typedef std::vector<MatrixXd, Eigen::aligned_allocator<MatrixXd>> VecOfMatrixXd;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>  target_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>> cusp_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr speed_limit_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr use_obst_stopping_sub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PolygonStamped>> collision_polygon_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::UInt64MultiArray>> error_code_pub_;
